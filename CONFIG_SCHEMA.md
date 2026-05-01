@@ -106,6 +106,12 @@ mempalace_memory:
     topic: session_summary             # Topic tag for diary entries
     read_on_start: false               # Load recent diary entries into context at session start
     last_n: 5                          # Number of entries to read on start (clamped 1..100)
+
+  # Optional AAAK dialect compression (Phase 12) — default off, lossy
+  aaak:
+    enabled: false                     # Enable AAAK dialect compression
+    compress_digests: false            # Store compressed versions alongside verbatim drawers
+    config_path: ""                    # Path to AAAK entity mapping config (JSON)
 ```
 
 `prefetch()` / `queue_prefetch()` accept optional `prefetch_wing` / `prefetch_room` (or `wing` / `room` in kwargs) so callers can supply session metadata for L2. L3 remains hybrid `search_memories` + lexical fallback (deep semantic search).

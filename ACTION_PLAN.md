@@ -147,9 +147,9 @@ Expected:
 
 **Source:** [AAAK dialect](https://mempalaceofficial.com/concepts/aaak-dialect.html).
 
-- [ ] Default off: no AAAK on stored drawers or default prefetch (document R@5 tradeoff).
-- [ ] Optional `Dialect.compress` for digests only; strict limits; never replace verbatim default retrieval.
-- [ ] Document `mempalace compress` CLI vs Hermes runtime.
+- [x] Default off: no AAAK on stored drawers or default prefetch (document R@5 tradeoff).
+- [x] Optional `Dialect.compress` for digests only; strict limits; never replace verbatim default retrieval.
+- [x] Document `mempalace compress` CLI vs Hermes runtime.
 
 ## Phase 13: MCP parity and Hermes surface docs
 

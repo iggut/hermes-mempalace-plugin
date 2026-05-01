@@ -190,6 +190,11 @@ class MemPalaceConfig:
     diary_read_on_start: bool = False
     diary_last_n: int = 5
 
+    # AAAK dialect (Phase 12) — default off, lossy compression for digests only
+    aaak_enabled: bool = False
+    aaak_compress_digests: bool = False
+    aaak_config_path: str = ""
+
     # Performance
     background_ingest: bool = True
     background_retrieval: bool = True
@@ -350,6 +355,7 @@ def _merge_plugin_dicts(base: Dict[str, Any], overlay: Dict[str, Any]) -> Dict[s
                 "memory_stack",
                 "graph",
                 "diary",
+                "aaak",
             )
             and isinstance(val, dict)
             and isinstance(out.get(key), dict)
@@ -436,6 +442,11 @@ def _apply_plugin_sections(cfg: MemPalaceConfig, plugin_config: Dict[str, Any]) 
     _apply_if_present(cfg, diary, "read_on_start", "diary_read_on_start", bool)
     _apply_if_present(cfg, diary, "last_n", "diary_last_n")
 
+    aaak = plugin_config.get("aaak") if isinstance(plugin_config.get("aaak"), dict) else {}
+    _apply_if_present(cfg, aaak, "enabled", "aaak_enabled", bool)
+    _apply_if_present(cfg, aaak, "compress_digests", "aaak_compress_digests", bool)
+    _apply_if_present(cfg, aaak, "config_path", "aaak_config_path")
+
     _apply_if_present(cfg, mstack, "enabled", "memory_stack_enabled", bool)
     _apply_if_present(cfg, mstack, "wake_up_on_session_start", "wake_up_on_session_start", bool)
     _apply_if_present(cfg, mstack, "wake_up_on_first_turn", "wake_up_on_first_turn", bool)
@@ -498,6 +509,9 @@ def _apply_plugin_sections(cfg: MemPalaceConfig, plugin_config: Dict[str, Any]) 
     _apply_if_present(cfg, plugin_config, "diary_topic")
     _apply_if_present(cfg, plugin_config, "diary_read_on_start", bool)
     _apply_if_present(cfg, plugin_config, "diary_last_n")
+    _apply_if_present(cfg, plugin_config, "aaak_enabled", bool)
+    _apply_if_present(cfg, plugin_config, "aaak_compress_digests", bool)
+    _apply_if_present(cfg, plugin_config, "aaak_config_path")
     _apply_if_present(cfg, plugin_config, "background_ingest")
     _apply_if_present(cfg, plugin_config, "background_retrieval")
     _apply_if_present(cfg, plugin_config, "max_fanout")
@@ -1038,6 +1052,21 @@ class MemPalaceMemoryProvider(_MP_ABC):
                         room=self._config.target_room,
                         agent=self._config.agent_name,
                     )
+
+                # AAAK digest compression (Phase 12) — compressed version alongside verbatim
+                if self._config.aaak_enabled and self._config.aaak_compress_digests and len(combined) > 100:
+                    compressed = self._mp_api.dialect_compress(
+                        combined,
+                        metadata={"wing": self._config.target_wing, "room": self._config.target_room},
+                    )
+                    if compressed:
+                        self._mp_api.add_drawer(
+                            content=compressed,
+                            source_file=self._turn_source_file(session_id=session_id, content=combined) + "_aaak",
+                            wing=self._config.target_wing,
+                            room="compressed",
+                            agent=self._config.agent_name,
+                        )
 
                 # Extract and store facts using schema-validated extractor
                 if self._config.extract_facts_each_turn and self._config.fact_extraction_mode in ("schema", "regex"):
@@ -1759,6 +1788,7 @@ def load_plugin() -> MemPalaceMemoryProvider:
             mempalace_lib_dir=lib_dir,
             lexical_scan_limit=config.lexical_scan_limit,
         )
+        provider._mp_api._aaak_config_path = config.aaak_config_path
         provider._holo_mirror = HolographicMirror(config.holographic_enabled)
         provider.initialize(session_id="", hermes_home=hermes_home)
     except Exception as e:
@@ -2353,6 +2383,30 @@ class MemPalaceAPI:
         except Exception as e:
             logger.debug("[MemPalaceMemory] diary_read failed: %s", e)
             return {"error": str(e)}
+
+    def dialect_compress(self, text: str, metadata: Optional[Dict[str, Any]] = None) -> str:
+        """Compress text into AAAK Dialect format (lossy symbolic summary)."""
+        self._ensure_imported()
+        try:
+            from mempalace.dialect import Dialect
+            config_path = self._dialect_config_path
+            if config_path and Path(config_path).exists():
+                dialect = Dialect.from_config(config_path)
+            else:
+                dialect = Dialect()
+            return dialect.compress(text, metadata=metadata)
+        except Exception as e:
+            logger.debug("[MemPalaceMemory] dialect_compress failed: %s", e)
+            return ""
+
+    @property
+    def _dialect_config_path(self) -> str:
+        """Get the AAAK dialect config path, expanding user paths."""
+        # Check instance attribute set from plugin config, then env, then default
+        path = getattr(self, "_aaak_config_path", "") or os.environ.get("MEMPALACE_AAAK_CONFIG", "")
+        if path:
+            return str(Path(path).expanduser())
+        return ""
 
 
 # Export public symbols for external use.
