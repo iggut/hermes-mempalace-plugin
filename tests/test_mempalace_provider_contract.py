@@ -660,3 +660,41 @@ def test_on_session_end_accepts_messages_list():
     provider = mod.MemPalaceMemoryProvider(mod.MemPalaceConfig(enabled=True))
     # Should not raise - accepts list as per ABC
     provider.on_session_end([{'role': 'user', 'content': 'test'}])
+
+
+def test_diary_config_loads_from_nested():
+    mod = load_plugin()
+    cfg = mod.load_config({
+        'memory': {'provider': 'mempalace'},
+        'mempalace_memory': {
+            'diary': {
+                'enabled': True,
+                'agent_name': 'testbot',
+                'read_on_start': True,
+                'last_n': 3,
+            },
+        },
+    })
+    assert cfg.diary_enabled is True
+    assert cfg.diary_agent_name == 'testbot'
+    assert cfg.diary_read_on_start is True
+    assert cfg.diary_last_n == 3
+
+
+def test_build_session_summary_returns_recent_messages():
+    mod = load_plugin()
+    provider = mod.MemPalaceMemoryProvider(mod.MemPalaceConfig(enabled=True))
+    messages = [
+        {'role': 'user', 'content': 'Hello'},
+        {'role': 'assistant', 'content': 'Hi there'},
+        {'role': 'user', 'content': 'How are you?'},
+    ]
+    summary = provider._build_session_summary(messages)
+    assert 'Hello' in summary
+    assert 'Hi there' in summary
+
+
+def test_build_session_summary_empty_for_no_messages():
+    mod = load_plugin()
+    provider = mod.MemPalaceMemoryProvider(mod.MemPalaceConfig(enabled=True))
+    assert provider._build_session_summary([]) == ''

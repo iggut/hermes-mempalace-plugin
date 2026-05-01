@@ -97,6 +97,15 @@ mempalace_memory:
     max_hops: 2                        # BFS hop limit for traverse (clamped 1..5)
     limit: 10                          # Max graph nodes returned (clamped 1..50)
     find_tunnels: false                # Also find cross-wing tunnels in prefetch
+
+  # Optional agent diary (Phase 11)
+  diary:
+    enabled: false                     # Write diary entries on session end, read on session start
+    agent_name: ""                     # Defaults to ingestion.agent if empty
+    wing: ""                           # Defaults to wing_{agent_name} if empty
+    topic: session_summary             # Topic tag for diary entries
+    read_on_start: false               # Load recent diary entries into context at session start
+    last_n: 5                          # Number of entries to read on start (clamped 1..100)
 ```
 
 `prefetch()` / `queue_prefetch()` accept optional `prefetch_wing` / `prefetch_room` (or `wing` / `room` in kwargs) so callers can supply session metadata for L2. L3 remains hybrid `search_memories` + lexical fallback (deep semantic search).

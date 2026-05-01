@@ -182,6 +182,14 @@ class MemPalaceConfig:
     mirror_remove: bool = True
     mirror_target_wing: str = "memory"
 
+    # Diary (Phase 11)
+    diary_enabled: bool = False
+    diary_agent_name: str = ""
+    diary_wing: str = ""
+    diary_topic: str = "session_summary"
+    diary_read_on_start: bool = False
+    diary_last_n: int = 5
+
     # Performance
     background_ingest: bool = True
     background_retrieval: bool = True
@@ -307,6 +315,9 @@ def _finalize_config(cfg: MemPalaceConfig) -> MemPalaceConfig:
     cfg.graph_traverse_max_hops = _clamp(cfg.graph_traverse_max_hops, 1, 5, 2)
     cfg.graph_traverse_limit = _clamp(cfg.graph_traverse_limit, 1, 50, 10)
 
+    # Diary config
+    cfg.diary_last_n = _clamp(cfg.diary_last_n, 1, 100, 5)
+
     # Clamp floats
     cfg.min_score = _clamp_float(cfg.min_score, 0.0, 1.0, 0.3)
     cfg.vector_weight = _clamp_float(cfg.vector_weight, 0.0, 1.0, 0.6)
@@ -338,6 +349,7 @@ def _merge_plugin_dicts(base: Dict[str, Any], overlay: Dict[str, Any]) -> Dict[s
                 "memory_mirror",
                 "memory_stack",
                 "graph",
+                "diary",
             )
             and isinstance(val, dict)
             and isinstance(out.get(key), dict)
@@ -416,6 +428,14 @@ def _apply_plugin_sections(cfg: MemPalaceConfig, plugin_config: Dict[str, Any]) 
     _apply_if_present(cfg, mir, "mirror_remove")
     _apply_if_present(cfg, mir, "target_wing", "mirror_target_wing")
 
+    diary = plugin_config.get("diary") if isinstance(plugin_config.get("diary"), dict) else {}
+    _apply_if_present(cfg, diary, "enabled", "diary_enabled", bool)
+    _apply_if_present(cfg, diary, "agent_name", "diary_agent_name")
+    _apply_if_present(cfg, diary, "wing", "diary_wing")
+    _apply_if_present(cfg, diary, "topic", "diary_topic")
+    _apply_if_present(cfg, diary, "read_on_start", "diary_read_on_start", bool)
+    _apply_if_present(cfg, diary, "last_n", "diary_last_n")
+
     _apply_if_present(cfg, mstack, "enabled", "memory_stack_enabled", bool)
     _apply_if_present(cfg, mstack, "wake_up_on_session_start", "wake_up_on_session_start", bool)
     _apply_if_present(cfg, mstack, "wake_up_on_first_turn", "wake_up_on_first_turn", bool)
@@ -472,6 +492,12 @@ def _apply_plugin_sections(cfg: MemPalaceConfig, plugin_config: Dict[str, Any]) 
     _apply_if_present(cfg, plugin_config, "mirror_replace")
     _apply_if_present(cfg, plugin_config, "mirror_remove")
     _apply_if_present(cfg, plugin_config, "mirror_target_wing")
+    _apply_if_present(cfg, plugin_config, "diary_enabled", bool)
+    _apply_if_present(cfg, plugin_config, "diary_agent_name")
+    _apply_if_present(cfg, plugin_config, "diary_wing")
+    _apply_if_present(cfg, plugin_config, "diary_topic")
+    _apply_if_present(cfg, plugin_config, "diary_read_on_start", bool)
+    _apply_if_present(cfg, plugin_config, "diary_last_n")
     _apply_if_present(cfg, plugin_config, "background_ingest")
     _apply_if_present(cfg, plugin_config, "background_retrieval")
     _apply_if_present(cfg, plugin_config, "max_fanout")
@@ -808,6 +834,7 @@ class MemPalaceMemoryProvider(_MP_ABC):
         }
         self._wake_block: str = ""
         self._wake_prefetch_applied: bool = False
+        self._diary_context: Optional[Dict[str, Any]] = None
 
     # ── MemoryProvider ABC (required) ─────────────────────────────────────
 
@@ -1132,6 +1159,31 @@ class MemPalaceMemoryProvider(_MP_ABC):
         if ended:
             result["ended"] = str(ended)
         return result
+
+    def _build_session_summary(self, messages: list) -> str:
+        """Build a short summary of the session for diary write."""
+        if not messages:
+            return ""
+        # Take last few messages to summarize
+        recent = messages[-6:] if len(messages) > 6 else messages
+        parts = []
+        for m in recent:
+            if not isinstance(m, dict):
+                continue
+            role = m.get("role", "")
+            content = m.get("content", "")
+            if not content:
+                continue
+            # Truncate each message
+            snippet = content[:200]
+            parts.append(f"{role}: {snippet}")
+        if not parts:
+            return ""
+        summary = "\n".join(parts)
+        # Cap total length
+        if len(summary) > 1000:
+            summary = summary[:1000] + "..."
+        return summary
 
     def _reset_memory_stack_session_state(self) -> None:
         self._wake_block = ""
@@ -1531,11 +1583,37 @@ class MemPalaceMemoryProvider(_MP_ABC):
         self._reset_memory_stack_session_state()
         if self._config.memory_stack_enabled and self._config.wake_up_on_session_start:
             self._load_wake_block_if_needed(force=True)
+        # Diary read on session start
+        if self._config.diary_enabled and self._config.diary_read_on_start and self._mp_api:
+            agent = self._config.diary_agent_name or self._config.agent_name
+            try:
+                entries = self._mp_api.diary_read(agent, last_n=self._config.diary_last_n, wing=self._config.diary_wing)
+                if isinstance(entries, dict) and entries.get("entries"):
+                    self._diary_context = entries
+                    logger.info("[MemPalaceMemory] loaded %d diary entries for %s", len(entries["entries"]), agent)
+            except Exception as e:
+                logger.debug("[MemPalaceMemory] diary read on start failed: %s", e)
 
     def on_session_end(self, messages: list) -> None:
         """Handle session end events."""
-        if self._config.ingestion_mode == "each_turn":
-            pass
+        # Diary write on session end
+        if self._config.diary_enabled and self._mp_api:
+            agent = self._config.diary_agent_name or self._config.agent_name
+            summary = self._build_session_summary(messages)
+            if summary:
+                def _write_diary():
+                    try:
+                        self._mp_api.diary_write(
+                            agent, summary,
+                            topic=self._config.diary_topic,
+                            wing=self._config.diary_wing,
+                        )
+                    except Exception as e:
+                        logger.debug("[MemPalaceMemory] diary write failed: %s", e)
+                if self._config.background_ingest:
+                    self._start_tracked_thread("diary-write", _write_diary)
+                else:
+                    _write_diary()
         if _env_enabled("HERMES_ENABLE_MEMPALACE_SESSION_IMPORTER", default=True):
             _launch_session_importer()
         self._join_background_threads()
@@ -1629,6 +1707,16 @@ class MemPalaceMemoryProvider(_MP_ABC):
                 "key": "holographic_enabled",
                 "description": "Enable Holographic structured fact overlay",
                 "default": False,
+            },
+            {
+                "key": "diary_enabled",
+                "description": "Enable agent diary (session-end write, session-start read)",
+                "default": False,
+            },
+            {
+                "key": "diary_agent_name",
+                "description": "Agent name for diary entries (defaults to agent_name config)",
+                "default": "",
             },
         ]
 
@@ -2245,6 +2333,26 @@ class MemPalaceAPI:
         except Exception as e:
             logger.debug("[MemPalaceMemory] graph_find_tunnels failed: %s", e)
             return []
+
+    def diary_write(self, agent_name: str, entry: str, topic: str = "general", wing: str = "") -> Dict[str, Any]:
+        """Write a timestamped diary entry to the palace."""
+        self._ensure_imported()
+        try:
+            from mempalace.mcp_server import tool_diary_write as _diary_write
+            return _diary_write(agent_name, entry, topic=topic, wing=wing)
+        except Exception as e:
+            logger.debug("[MemPalaceMemory] diary_write failed: %s", e)
+            return {"success": False, "error": str(e)}
+
+    def diary_read(self, agent_name: str, last_n: int = 10, wing: str = "") -> Dict[str, Any]:
+        """Read recent diary entries for an agent."""
+        self._ensure_imported()
+        try:
+            from mempalace.mcp_server import tool_diary_read as _diary_read
+            return _diary_read(agent_name, last_n=last_n, wing=wing)
+        except Exception as e:
+            logger.debug("[MemPalaceMemory] diary_read failed: %s", e)
+            return {"error": str(e)}
 
 
 # Export public symbols for external use.

@@ -139,9 +139,9 @@ Expected:
 
 **Sources:** [Agents](https://mempalaceofficial.com/concepts/agents.html), [MCP diary tools](https://mempalaceofficial.com/reference/mcp-tools.html).
 
-- [ ] Document stable `ingestion.agent` / `agent_name` ↔ `wing_<name>` convention.
-- [ ] Optional diary: config `diary.enabled`, `diary.agent_name`; session-end append if Python API exists, else document MCP `mempalace_diary_write`.
-- [ ] Optional diary read on session start (`diary.last_n`, bounded tokens).
+- [x] Document stable `ingestion.agent` / `agent_name` ↔ `wing_<name>` convention.
+- [x] Optional diary: config `diary.enabled`, `diary.agent_name`; session-end append if Python API exists, else document MCP `mempalace_diary_write`.
+- [x] Optional diary read on session start (`diary.last_n`, bounded tokens).
 
 ## Phase 12: AAAK dialect (optional)
 
