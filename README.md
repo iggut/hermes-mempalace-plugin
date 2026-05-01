@@ -19,6 +19,10 @@ Automated memory provider for Hermes Agent backed by MemPalace verbatim drawers,
 | Duplicate safety | enabled for direct drawer writes | `add_drawer()` checks MemPalace for near-duplicates before writing and returns the existing drawer ID on a hit. |
 | Lexical fallback | enabled for search | If semantic search misses or has spare result slots, exact drawer IDs and skill/source-file name variants are matched deterministically. |
 | Memory stack (L0–L3) | disabled | Optional `mempalace.layers.MemoryStack`: bounded `wake_up()` (L0+L1) on session or first turn; L2 `recall()` when wing/room are known; L3 remains `prefetch()` hybrid search. |
+| KG-assisted recall | disabled | `include_kg_facts: true` extracts entity hints from queries and appends knowledge graph triples to prefetch. |
+| Graph-assisted prefetch | disabled | `graph.enabled: true` uses `palace_graph.traverse` / `find_tunnels` to surface connected rooms in prefetch. |
+| Agent diary | disabled | `diary.enabled: true` writes session summaries on end, reads recent entries on start. |
+| AAAK dialect | disabled | `aaak.enabled: true` stores lossy compressed digests alongside verbatim drawers. Never replaces retrieval. |
 | Session-end import | separate plugin | `mempalace_session_importer` owns the background chat importer hook; compression remains separate. |
 
 ## Activation
@@ -66,6 +70,30 @@ See `CONFIG_SCHEMA.md` for the full schema. Safe defaults prioritize recall with
 | `facts.extract_each_turn` | `false` | Explicitly opt into regex fact extraction. |
 | `holographic.enabled` | `false` | Optional Holographic fact mirror. |
 | `memory_mirror.enabled` | `false` | Optional mirroring of Hermes built-in memory writes. |
+
+## Two Surfaces: MemoryProvider vs MCP
+
+The MemPalace memory plugin provides two integration surfaces:
+
+1. **MemoryProvider** (this plugin) — automated, lifecycle-integrated. The agent calls `prefetch()`, `sync_turn()`, `on_memory_write()` transparently via the Hermes MemoryManager.
+2. **MCP tools** — 29 explicit tools exposed by `mempalace mcp` for direct agent/tool use (search, drawers, KG, diary, graph, tunnels, etc.).
+
+### Parity Matrix
+
+| MemoryProvider method | MCP equivalent | Notes |
+|---|---|---|
+| `prefetch()` | `mempalace_search` | Provider does hybrid search + KG + graph; MCP is search-only |
+| `sync_turn()` | `mempalace_add_drawer` | Provider auto-chunks and extracts facts; MCP is manual |
+| `on_memory_write()` | `mempalace_add_drawer` / `mempalace_kg_invalidate` | Provider mirrors automatically |
+| `queue_prefetch()` | (none) | Provider-only background warming |
+| `on_delegation()` | `mempalace_add_drawer` | Provider ingests subagent results automatically |
+| `on_pre_compress()` | (none) | Provider extracts facts before compression |
+| (none) | `mempalace_traverse` | MCP-only graph traversal; provider uses `graph.enabled` config |
+| (none) | `mempalace_create_tunnel` | MCP-only explicit tunnel creation |
+| (none) | `mempalace_diary_write` / `mempalace_diary_read` | Provider has `diary.enabled`; MCP is always available |
+| (none) | `mempalace_compress` | MCP-only AAAK compression CLI; provider has `aaak.enabled` |
+
+Use the MemoryProvider for automated, zero-config memory. Use MCP tools for explicit, agent-initiated operations (creating tunnels, manual diary writes, ad-hoc compression).
 
 ## Provider Integration Notes
 

@@ -155,9 +155,9 @@ Expected:
 
 **Source:** [MCP tools](https://mempalaceofficial.com/reference/mcp-tools.html).
 
-- [ ] Expand README “two surfaces”: MemoryProvider vs 29 MCP tools.
-- [ ] Maintainer parity matrix: provider methods ↔ MCP tool names.
-- [ ] Verify duplicate-check before `add_drawer` / `chunk_and_add` when MemPalace duplicate API is wired.
+- [x] Expand README “two surfaces”: MemoryProvider vs 29 MCP tools.
+- [x] Maintainer parity matrix: provider methods ↔ MCP tool names.
+- [x] Verify duplicate-check before `add_drawer` / `chunk_and_add` when MemPalace duplicate API is wired.
 - [ ] Document `mempalace_reconnect` when CLI and Hermes share a palace.
 
 ## Phase 14: CLI operator workflow
