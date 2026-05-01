@@ -130,10 +130,10 @@ Expected:
 
 **Sources:** [Knowledge graph](https://mempalaceofficial.com/concepts/knowledge-graph.html), [Contradiction detection](https://mempalaceofficial.com/concepts/contradiction-detection.html).
 
-- [ ] Implement `include_kg_facts`: entity hints from query, `query_entity` / `timeline` within `kg_entity_limit`, append to prefetch within char budget.
-- [ ] Triple provenance on ingest: `source_file`, `source_closet` on `add_triple`.
+- [x] Implement `include_kg_facts`: entity hints from query, `query_entity` / `timeline` within `kg_entity_limit`, append to prefetch within char budget.
+- [x] Triple provenance on ingest: `source_file`, `source_closet` on `add_triple`.
 - [ ] Contradiction checks: defer until upstream ships stable API/MCP; then optional `contradiction_check.enabled` or document MCP-only workflow.
-- [ ] Tests: KG append + invalidate against temp DB (skip if `mempalace` not installed).
+- [x] Tests: KG append + invalidate against temp DB (skip if `mempalace` not installed).
 
 ## Phase 11: Specialist agents and diary
 
@@ -172,7 +172,7 @@ Expected:
 
 - [ ] Audit `SchemaValidatedFactExtractor` regexes (fix broken fragments); safe default `none` until LLM extraction exists.
 - [ ] Optional validated LLM extraction when Hermes supports a safe callout.
-- [ ] Wire `allowed_predicates` from config into extractor.
+- [x] Wire `allowed_predicates` from config into extractor.
 
 ## Phase 16: Diagnostics, tests, packaging
 

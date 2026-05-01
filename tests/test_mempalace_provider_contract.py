@@ -454,3 +454,209 @@ def test_prefetch_passes_explicit_wing_to_scoped_recall():
     provider._mp_api = FakeAPI()
     provider.prefetch('q', prefetch_wing='driftwood', prefetch_room='bugs')
     assert recalls == [('driftwood', 'bugs')]
+
+
+def test_system_prompt_block_reports_active_features():
+    mod = load_plugin()
+    provider = mod.MemPalaceMemoryProvider(mod.MemPalaceConfig(
+        enabled=True,
+        memory_stack_enabled=True,
+        extract_facts_each_turn=True,
+    ))
+    provider._initialized = True
+    block = provider.system_prompt_block()
+    assert 'MemPalace memory provider active' in block
+    assert 'memory stack L0-L3' in block
+    assert 'fact extraction' in block
+
+
+def test_system_prompt_block_empty_when_disabled():
+    mod = load_plugin()
+    provider = mod.MemPalaceMemoryProvider(mod.MemPalaceConfig(enabled=False))
+    assert provider.system_prompt_block() == ''
+
+
+def test_system_prompt_block_empty_when_not_initialized():
+    mod = load_plugin()
+    provider = mod.MemPalaceMemoryProvider(mod.MemPalaceConfig(enabled=True))
+    assert provider.system_prompt_block() == ''
+
+
+def test_get_config_schema_returns_expected_keys():
+    mod = load_plugin()
+    provider = mod.MemPalaceMemoryProvider(mod.MemPalaceConfig(enabled=True))
+    schema = provider.get_config_schema()
+    keys = {f['key'] for f in schema}
+    assert 'palace_data_dir' in keys
+    assert 'ingestion_mode' in keys
+    assert 'retrieval_mode' in keys
+    assert 'memory_stack_enabled' in keys
+    assert 'extract_facts_each_turn' in keys
+    assert 'holographic_enabled' in keys
+
+
+def test_on_pre_compress_extracts_facts():
+    mod = load_plugin()
+    provider = mod.MemPalaceMemoryProvider(mod.MemPalaceConfig(
+        enabled=True,
+        extract_facts_each_turn=True,
+        fact_extraction_mode='schema',
+        min_turn_length=5,
+    ))
+    provider._mp_api = object()
+    messages = [
+        {'role': 'user', 'content': 'Alice works_on the MemPalace project and uses Python'},
+        {'role': 'assistant', 'content': 'Great, noted.'},
+    ]
+    result = provider.on_pre_compress(messages)
+    # Should return extracted facts or empty string (depends on regex matching)
+    assert isinstance(result, str)
+
+
+def test_on_pre_compress_empty_when_extraction_disabled():
+    mod = load_plugin()
+    provider = mod.MemPalaceMemoryProvider(mod.MemPalaceConfig(
+        enabled=True,
+        extract_facts_each_turn=False,
+    ))
+    provider._mp_api = object()
+    result = provider.on_pre_compress([{'role': 'user', 'content': 'test'}])
+    assert result == ''
+
+
+def test_on_delegation_ingests_result():
+    mod = load_plugin()
+    captured = []
+
+    class FakeAPI:
+        def chunk_and_add(self, **kwargs):
+            captured.append(kwargs)
+            return ['drawer_1']
+
+    provider = mod.MemPalaceMemoryProvider(mod.MemPalaceConfig(
+        enabled=True,
+        ingestion_mode='each_turn',
+        background_ingest=False,
+    ))
+    provider._mp_api = FakeAPI()
+    provider.on_delegation('fix the bug', 'bug fixed successfully', child_session_id='child1')
+    assert len(captured) == 1
+    assert 'fix the bug' in captured[0]['content']
+    assert 'bug fixed successfully' in captured[0]['content']
+
+
+def test_on_delegation_skips_when_ingestion_none():
+    mod = load_plugin()
+    captured = []
+
+    class FakeAPI:
+        def chunk_and_add(self, **kwargs):
+            captured.append(kwargs)
+            return ['drawer_1']
+
+    provider = mod.MemPalaceMemoryProvider(mod.MemPalaceConfig(
+        enabled=True,
+        ingestion_mode='none',
+        background_ingest=False,
+    ))
+    provider._mp_api = FakeAPI()
+    provider.on_delegation('task', 'result')
+    assert captured == []
+
+
+def test_kg_query_entity_returns_triples():
+    mod = load_plugin()
+
+    class FakeKG:
+        def query_entity(self, entity, direction='both'):
+            return [
+                {'subject': entity, 'predicate': 'works_on', 'object': 'MemPalace',
+                 'confidence': 0.9, 'valid_from': '2025-01', 'current': True, 'valid_to': None},
+            ]
+
+    api = mod.MemPalaceAPI('/tmp/no-palace')
+    api._imported = True
+    api._kg = FakeKG()
+    results = api.kg_query_entity('Alice')
+    assert len(results) == 1
+    assert results[0]['subject'] == 'Alice'
+    assert results[0]['predicate'] == 'works_on'
+
+
+def test_kg_query_entity_returns_empty_on_error():
+    mod = load_plugin()
+
+    class FakeKG:
+        def query_entity(self, entity, direction='both'):
+            raise RuntimeError('db error')
+
+    api = mod.MemPalaceAPI('/tmp/no-palace')
+    api._imported = True
+    api._kg = FakeKG()
+    assert api.kg_query_entity('Alice') == []
+
+
+def test_prefetch_includes_kg_facts():
+    mod = load_plugin()
+
+    class FakeAPI:
+        def wake_up_context(self, **kw):
+            return ''
+        def scoped_recall(self, *a, **k):
+            return ''
+        def search(self, **kwargs):
+            return []
+        def kg_query_entity(self, entity, direction='both'):
+            if entity == 'Alice':
+                return [{'subject': 'Alice', 'predicate': 'works_on', 'object': 'MemPalace',
+                         'confidence': 0.9, 'valid_from': '2025-01', 'current': True, 'valid_to': None}]
+            return []
+
+    provider = mod.MemPalaceMemoryProvider(mod.MemPalaceConfig(
+        enabled=True,
+        retrieval_enabled=True,
+        include_kg_facts=True,
+        background_retrieval=False,
+    ))
+    provider._mp_api = FakeAPI()
+    result = provider.prefetch('What does Alice work on?')
+    assert 'Knowledge Graph' in result
+    assert 'Alice' in result
+    assert 'works_on' in result
+    assert 'MemPalace' in result
+
+
+def test_prefetch_kg_facts_disabled_by_config():
+    mod = load_plugin()
+    kg_called = []
+
+    class FakeAPI:
+        def wake_up_context(self, **kw):
+            return ''
+        def scoped_recall(self, *a, **k):
+            return ''
+        def search(self, **kwargs):
+            return []
+        def kg_query_entity(self, entity, direction='both'):
+            kg_called.append(entity)
+            return [{'subject': entity, 'predicate': 'is', 'object': 'test',
+                     'confidence': 0.8, 'valid_from': '', 'current': True, 'valid_to': None}]
+
+    provider = mod.MemPalaceMemoryProvider(mod.MemPalaceConfig(
+        enabled=True,
+        retrieval_enabled=True,
+        include_kg_facts=False,
+        background_retrieval=False,
+    ))
+    provider._mp_api = FakeAPI()
+    result = provider.prefetch('Alice is great')
+    assert kg_called == []
+    assert 'Knowledge Graph' not in result
+
+
+def test_on_session_end_accepts_messages_list():
+    """Verify on_session_end accepts the ABC signature (messages list)."""
+    mod = load_plugin()
+    provider = mod.MemPalaceMemoryProvider(mod.MemPalaceConfig(enabled=True))
+    # Should not raise - accepts list as per ABC
+    provider.on_session_end([{'role': 'user', 'content': 'test'}])

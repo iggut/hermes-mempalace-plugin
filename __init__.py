@@ -64,6 +64,23 @@ from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
+# Common English words that look like entities but aren't
+_KG_STOP_ENTITIES = {
+    "The", "This", "That", "Each", "All", "No", "One", "Any", "Some",
+    "User", "Assistant", "System", "Session", "Turn", "Day", "Now",
+    "Here", "There", "When", "What", "Where", "Which", "How", "Why",
+    "Can", "Could", "Would", "Should", "Will", "May", "Might", "Must",
+    "Do", "Does", "Did", "Has", "Have", "Had", "Is", "Are", "Was",
+    "Were", "Been", "Being", "Get", "Got", "Set", "Put", "Run",
+    "New", "Old", "First", "Last", "Next", "Prev", "Main",
+    "True", "False", "None", "Null", "Error", "Warning", "Info",
+    "File", "Path", "Name", "Type", "Key", "Value", "List", "Dict",
+    "String", "Int", "Float", "Bool", "Code", "Data", "Test",
+    "Command", "Function", "Method", "Class", "Module", "Import",
+    "Python", "Json", "Yaml", "Html", "Http", "Api", "Url",
+    "Max", "Min", "Sum", "Avg", "Count", "Total", "Index",
+}
+
 
 def _env_enabled(name: str, default: bool = False) -> bool:
     raw = os.environ.get(name)
@@ -788,6 +805,19 @@ class MemPalaceMemoryProvider(_MP_ABC):
             return False
         return True
 
+    def system_prompt_block(self) -> str:
+        if not self._config.enabled or not self._initialized:
+            return ""
+        parts = ["[MemPalace memory provider active"]
+        if self._config.memory_stack_enabled:
+            parts.append(", memory stack L0-L3")
+        if self._config.extract_facts_each_turn:
+            parts.append(", fact extraction")
+        if self._config.holographic_enabled:
+            parts.append(", holographic overlay")
+        parts.append("]")
+        return "".join(parts)
+
     def initialize(self, session_id: str = "", *, hermes_home: str = "", **kwargs) -> None:
         """Initialize API connections — lazy MemPalace import and palace handles."""
         self._session_id = session_id or self._session_id or ""
@@ -1137,6 +1167,47 @@ class MemPalaceMemoryProvider(_MP_ABC):
         sid = (sid or self._session_id or "session")[:16]
         return f"session_{sid}_memory_{action}_{target}"
 
+    def _append_kg_facts(
+        self,
+        query: str,
+        parts: List[str],
+        total_chars: int,
+        max_chars: int,
+    ) -> int:
+        """Extract entity hints from query and append KG facts to prefetch parts."""
+        entities = set()
+        for match in re.finditer(r'\b([A-Z][a-z]{2,}(?:\s+[A-Z][a-z]+)*)\b', query):
+            entity = match.group(1).strip()
+            if len(entity) >= 3 and entity not in _KG_STOP_ENTITIES:
+                entities.add(entity)
+            if len(entities) >= self._config.kg_entity_limit:
+                break
+        if not entities:
+            return total_chars
+        kg_header = "--- [mempalace] Knowledge Graph ---"
+        header_written = False
+        for entity in sorted(entities):
+            triples = self._mp_api.kg_query_entity(entity, direction="both")
+            for t in triples:
+                if not header_written:
+                    if total_chars + len(kg_header) + 1 > max_chars:
+                        return total_chars
+                    parts.append(kg_header)
+                    total_chars += len(kg_header) + 1
+                    header_written = True
+                subj = t.get("subject", "?")
+                pred = t.get("predicate", "?")
+                obj = t.get("object", "?")
+                conf = t.get("confidence", 0)
+                valid = t.get("valid_from", "")
+                status = "current" if t.get("current") else f"ended:{t.get('valid_to', '?')}"
+                line = f"[KG {conf:.2f}] {subj} --{pred}--> {obj} ({valid}, {status})"
+                if total_chars + len(line) + 1 > max_chars:
+                    return total_chars
+                parts.append(line)
+                total_chars += len(line) + 1
+        return total_chars
+
     def _run_prefetch_search(
         self,
         query: str,
@@ -1193,6 +1264,9 @@ class MemPalaceMemoryProvider(_MP_ABC):
         )
 
         if skip_l3:
+            # KG facts even when L3 is skipped
+            if self._config.include_kg_facts and self._mp_api:
+                total_chars = self._append_kg_facts(query, parts, total_chars, _MAX_CHARS)
             if self._holo_mirror and self._config.holographic_enabled:
                 holo_results = self._holo_mirror.search_facts(query, limit=3)
                 for r in holo_results:
@@ -1240,6 +1314,10 @@ class MemPalaceMemoryProvider(_MP_ABC):
                     break
                 parts.append(line)
                 total_chars += len(line) + 1
+
+        # KG facts from knowledge graph
+        if self._config.include_kg_facts and self._mp_api:
+            total_chars = self._append_kg_facts(query, parts, total_chars, _MAX_CHARS)
 
         if self._holo_mirror and self._config.holographic_enabled:
             holo_results = self._holo_mirror.search_facts(query, limit=3)
@@ -1369,14 +1447,105 @@ class MemPalaceMemoryProvider(_MP_ABC):
         if self._config.memory_stack_enabled and self._config.wake_up_on_session_start:
             self._load_wake_block_if_needed(force=True)
 
-    def on_session_end(self, session_id: str, **kwargs) -> None:
+    def on_session_end(self, messages: list) -> None:
         """Handle session end events."""
-        del session_id, kwargs
         if self._config.ingestion_mode == "each_turn":
             pass
         if _env_enabled("HERMES_ENABLE_MEMPALACE_SESSION_IMPORTER", default=True):
             _launch_session_importer()
         self._join_background_threads()
+
+    def on_pre_compress(self, messages: list) -> str:
+        """Extract facts from messages about to be compressed."""
+        if not self._config.enabled or not self._mp_api:
+            return ""
+        if not self._config.extract_facts_each_turn:
+            return ""
+        combined = " ".join(
+            m.get("content", "") for m in messages if isinstance(m, dict)
+        )[: self._config.max_turn_length]
+        if len(combined) < self._config.min_turn_length:
+            return ""
+        facts = SchemaValidatedFactExtractor.extract_facts(
+            combined,
+            max_facts=self._config.max_facts_per_turn,
+            min_confidence=self._config.min_confidence,
+            mode=self._config.fact_extraction_mode,
+            allowed_predicates=self._config.allowed_predicates or None,
+        )
+        if not facts:
+            return ""
+        lines = [
+            f"- {f['subject']} {f['predicate']} {f['object_']} (conf={f['confidence']:.2f})"
+            for f in facts
+        ]
+        return "Extracted facts from compressed context:\n" + "\n".join(lines)
+
+    def on_delegation(self, task: str, result: str, *, child_session_id: str = "", **kwargs) -> None:
+        """Ingest subagent delegation results into MemPalace."""
+        del kwargs
+        if not self._config.enabled or not self._mp_api:
+            return
+        if self._config.ingestion_mode == "none":
+            return
+        combined = f"Delegated task: {task}\nResult: {result}"[: self._config.max_turn_length]
+
+        def _ingest():
+            self._metric("ingest_attempts")
+            try:
+                self._mp_api.chunk_and_add(
+                    content=combined,
+                    source_file=f"session_{(self._session_id or 'session')[:16]}_delegation_{child_session_id[:16]}",
+                    wing=self._config.target_wing,
+                    room=self._config.target_room,
+                    agent=self._config.agent_name,
+                )
+            except Exception as e:
+                self._metric("ingest_errors")
+                logger.warning("[MemPalaceMemory] on_delegation ingest failed: %s", e)
+
+        if self._config.background_ingest:
+            self._start_tracked_thread("delegation-ingest", _ingest)
+        else:
+            _ingest()
+
+    def get_config_schema(self) -> List[Dict[str, Any]]:
+        """Return config fields for `hermes memory setup`."""
+        return [
+            {
+                "key": "palace_data_dir",
+                "description": "Path to MemPalace palace directory (ChromaDB)",
+                "required": False,
+                "default": "~/.mempalace/palace",
+            },
+            {
+                "key": "ingestion_mode",
+                "description": "When to ingest conversations into MemPalace",
+                "choices": ["none", "each_turn", "session_end"],
+                "default": "none",
+            },
+            {
+                "key": "retrieval_mode",
+                "description": "Search retrieval mode",
+                "choices": ["hybrid", "vector", "bm25"],
+                "default": "hybrid",
+            },
+            {
+                "key": "memory_stack_enabled",
+                "description": "Enable L0-L3 memory stack (wake-up, scoped recall, deep search)",
+                "default": False,
+            },
+            {
+                "key": "extract_facts_each_turn",
+                "description": "Extract structured facts from each conversation turn",
+                "default": False,
+            },
+            {
+                "key": "holographic_enabled",
+                "description": "Enable Holographic structured fact overlay",
+                "default": False,
+            },
+        ]
 
     def shutdown(self) -> None:
         """Clean up resources on shutdown."""
@@ -1574,22 +1743,31 @@ class MemPalaceAPI:
             lp = str(Path(lib).expanduser())
             if lp not in sys.path:
                 sys.path.insert(0, lp)
+        # Granular imports — each module is independent so partial imports work
+        try:
+            from mempalace.searcher import search_memories as _sm
+            self._search_memories_fn = _sm
+        except Exception as e:
+            logger.debug("[MemPalaceMemory] searcher import failed: %s", e)
+        try:
+            from mempalace.palace import get_collection as _gc
+            self._get_collection_fn = _gc
+        except Exception as e:
+            logger.debug("[MemPalaceMemory] palace import failed: %s", e)
         try:
             from mempalace.miner import add_drawer as _mad
             from mempalace.miner import chunk_text as _chunk
-            from mempalace.palace import get_collection as _gc
-            from mempalace.searcher import search_memories as _sm
-
-            self._search_memories_fn = _sm
-            self._get_collection_fn = _gc
             self._miner_add_drawer_fn = _mad
             self._chunk_text_fn = _chunk
-            self._imported = True
-            self._import_error = None
         except Exception as e:
-            self._import_error = str(e)
-            self._imported = False
-            logger.warning("[MemPalaceMemory] mempalace package import failed: %s", e)
+            logger.debug("[MemPalaceMemory] miner import failed: %s", e)
+        # Mark as imported if at least search or collection works
+        self._imported = bool(self._search_memories_fn or self._get_collection_fn)
+        if not self._imported:
+            self._import_error = "No mempalace modules could be imported"
+            logger.warning("[MemPalaceMemory] mempalace package import failed: no modules available")
+        else:
+            self._import_error = None
 
     def _resolve_kg(self) -> Any:
         if self._kg is not None:
@@ -1600,7 +1778,10 @@ class MemPalaceAPI:
         try:
             from mempalace.knowledge_graph import KnowledgeGraph as _KG
 
-            self._kg = _KG()
+            db_path = None
+            if self._palace_data_dir:
+                db_path = str(Path(self._palace_data_dir).parent / "knowledge_graph.sqlite3")
+            self._kg = _KG(db_path=db_path)
         except Exception as e:
             logger.warning("[MemPalaceMemory] KnowledgeGraph unavailable: %s", e)
             self._kg = None
@@ -1946,6 +2127,17 @@ class MemPalaceAPI:
         except Exception as e:
             logger.warning("[MemPalaceMemory] kg_invalidate_triple failed: %s", e)
             return False
+
+    def kg_query_entity(self, entity: str, direction: str = "both") -> List[Dict[str, Any]]:
+        """Query all relationships for an entity from the knowledge graph."""
+        kg = self._resolve_kg()
+        if kg is None:
+            return []
+        try:
+            return kg.query_entity(entity, direction=direction)
+        except Exception as e:
+            logger.debug("[MemPalaceMemory] kg_query_entity failed: %s", e)
+            return []
 
 
 # Export public symbols for external use.
