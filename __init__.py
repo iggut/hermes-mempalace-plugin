@@ -165,6 +165,12 @@ class MemPalaceConfig:
     kg_entity_limit: int = 5
     retrieval_timeout_seconds: float = 0.5
 
+    # Graph-assisted prefetch (Phase 9)
+    graph_prefetch_enabled: bool = False
+    graph_traverse_max_hops: int = 2
+    graph_traverse_limit: int = 10
+    graph_find_tunnels: bool = False
+
     # Holographic mirroring
     holographic_enabled: bool = False
     holographic_default_trust: float = 0.5
@@ -297,6 +303,10 @@ def _finalize_config(cfg: MemPalaceConfig) -> MemPalaceConfig:
 
     cfg.retrieval_timeout_seconds = max(0.05, cfg.retrieval_timeout_ms / 1000.0)
 
+    # Graph config
+    cfg.graph_traverse_max_hops = _clamp(cfg.graph_traverse_max_hops, 1, 5, 2)
+    cfg.graph_traverse_limit = _clamp(cfg.graph_traverse_limit, 1, 50, 10)
+
     # Clamp floats
     cfg.min_score = _clamp_float(cfg.min_score, 0.0, 1.0, 0.3)
     cfg.vector_weight = _clamp_float(cfg.vector_weight, 0.0, 1.0, 0.6)
@@ -327,6 +337,7 @@ def _merge_plugin_dicts(base: Dict[str, Any], overlay: Dict[str, Any]) -> Dict[s
                 "holographic",
                 "memory_mirror",
                 "memory_stack",
+                "graph",
             )
             and isinstance(val, dict)
             and isinstance(out.get(key), dict)
@@ -424,6 +435,12 @@ def _apply_plugin_sections(cfg: MemPalaceConfig, plugin_config: Dict[str, Any]) 
     _apply_if_present(cfg, mstack, "recall_char_budget")
     _apply_if_present(cfg, mstack, "recall_n_results")
 
+    graph = plugin_config.get("graph") if isinstance(plugin_config.get("graph"), dict) else {}
+    _apply_if_present(cfg, graph, "enabled", "graph_prefetch_enabled", bool)
+    _apply_if_present(cfg, graph, "max_hops", "graph_traverse_max_hops")
+    _apply_if_present(cfg, graph, "limit", "graph_traverse_limit")
+    _apply_if_present(cfg, graph, "find_tunnels", "graph_find_tunnels", bool)
+
     # Flat keys (override nested)
     _apply_if_present(cfg, plugin_config, "enabled", "enabled", bool)
     _apply_if_present(cfg, plugin_config, "ingestion_mode")
@@ -476,6 +493,10 @@ def _apply_plugin_sections(cfg: MemPalaceConfig, plugin_config: Dict[str, Any]) 
     _apply_if_present(cfg, plugin_config, "wake_char_budget")
     _apply_if_present(cfg, plugin_config, "recall_char_budget")
     _apply_if_present(cfg, plugin_config, "recall_n_results")
+    _apply_if_present(cfg, plugin_config, "graph_prefetch_enabled", bool)
+    _apply_if_present(cfg, plugin_config, "graph_traverse_max_hops")
+    _apply_if_present(cfg, plugin_config, "graph_traverse_limit")
+    _apply_if_present(cfg, plugin_config, "graph_find_tunnels", bool)
 
 
 def load_config(config_data: Optional[Dict[str, Any]] = None) -> MemPalaceConfig:
@@ -1208,6 +1229,66 @@ class MemPalaceMemoryProvider(_MP_ABC):
                 total_chars += len(line) + 1
         return total_chars
 
+    def _append_graph_context(
+        self,
+        query: str,
+        parts: List[str],
+        total_chars: int,
+        max_chars: int,
+    ) -> int:
+        """Append graph traversal context (connected rooms, tunnels) to prefetch."""
+        # Use the current wing/room as starting point for traversal
+        start_room = self._config.target_room or "conversations"
+        try:
+            traversed = self._mp_api.graph_traverse(
+                start_room,
+                max_hops=self._config.graph_traverse_max_hops,
+                limit=self._config.graph_traverse_limit,
+            )
+            if traversed:
+                hdr = "--- [mempalace] Connected Rooms (graph) ---"
+                if total_chars + len(hdr) + 1 > max_chars:
+                    return total_chars
+                parts.append(hdr)
+                total_chars += len(hdr) + 1
+                for node in traversed:
+                    room = node.get("room", "?")
+                    wings = ", ".join(node.get("wings", []))
+                    hop = node.get("hop", 0)
+                    halls = ", ".join(node.get("halls", []))
+                    line = f"  [{hop}hop] {room} (wings: {wings}, halls: {halls})"
+                    if total_chars + len(line) + 1 > max_chars:
+                        break
+                    parts.append(line)
+                    total_chars += len(line) + 1
+        except Exception as e:
+            logger.debug("[MemPalaceMemory] graph traversal skipped: %s", e)
+
+        if self._config.graph_find_tunnels:
+            try:
+                tunnels = self._mp_api.graph_find_tunnels(
+                    wing_a=self._config.target_wing or None,
+                    limit=5,
+                )
+                if tunnels:
+                    hdr = "--- [mempalace] Cross-wing Tunnels ---"
+                    if total_chars + len(hdr) + 1 > max_chars:
+                        return total_chars
+                    parts.append(hdr)
+                    total_chars += len(hdr) + 1
+                    for t in tunnels:
+                        room = t.get("room", "?")
+                        wings = ", ".join(t.get("wings", []))
+                        count = t.get("count", 0)
+                        line = f"  {room} (wings: {wings}, {count} refs)"
+                        if total_chars + len(line) + 1 > max_chars:
+                            break
+                        parts.append(line)
+                        total_chars += len(line) + 1
+            except Exception as e:
+                logger.debug("[MemPalaceMemory] find_tunnels skipped: %s", e)
+        return total_chars
+
     def _run_prefetch_search(
         self,
         query: str,
@@ -1318,6 +1399,10 @@ class MemPalaceMemoryProvider(_MP_ABC):
         # KG facts from knowledge graph
         if self._config.include_kg_facts and self._mp_api:
             total_chars = self._append_kg_facts(query, parts, total_chars, _MAX_CHARS)
+
+        # Graph-assisted context (tunnels, connected rooms)
+        if self._config.graph_prefetch_enabled and self._mp_api:
+            total_chars = self._append_graph_context(query, parts, total_chars, _MAX_CHARS)
 
         if self._holo_mirror and self._config.holographic_enabled:
             holo_results = self._holo_mirror.search_facts(query, limit=3)
@@ -2137,6 +2222,28 @@ class MemPalaceAPI:
             return kg.query_entity(entity, direction=direction)
         except Exception as e:
             logger.debug("[MemPalaceMemory] kg_query_entity failed: %s", e)
+            return []
+
+    def graph_traverse(self, start_room: str, max_hops: int = 2, limit: int = 10) -> List[Dict[str, Any]]:
+        """BFS walk from a room through shared wings (graph-assisted prefetch)."""
+        self._ensure_imported()
+        try:
+            from mempalace.palace_graph import traverse as _traverse
+            results = _traverse(start_room, max_hops=max_hops)
+            return results[:limit] if isinstance(results, list) else []
+        except Exception as e:
+            logger.debug("[MemPalaceMemory] graph_traverse failed: %s", e)
+            return []
+
+    def graph_find_tunnels(self, wing_a: str = None, wing_b: str = None, limit: int = 10) -> List[Dict[str, Any]]:
+        """Find rooms that bridge multiple wings (passive tunnels)."""
+        self._ensure_imported()
+        try:
+            from mempalace.palace_graph import find_tunnels as _find_tunnels
+            results = _find_tunnels(wing_a=wing_a, wing_b=wing_b)
+            return results[:limit] if isinstance(results, list) else []
+        except Exception as e:
+            logger.debug("[MemPalaceMemory] graph_find_tunnels failed: %s", e)
             return []
 
 

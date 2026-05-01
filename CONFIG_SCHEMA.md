@@ -90,6 +90,13 @@ mempalace_memory:
     wake_char_budget: 3200             # Clamp wake-up text length (chars)
     recall_char_budget: 1500          # Clamp L2 recall text length (chars)
     recall_n_results: 10               # Passed to MemoryStack.recall when supported
+
+  # Optional graph-assisted prefetch (Phase 9)
+  graph:
+    enabled: false                     # Enable graph traversal in prefetch
+    max_hops: 2                        # BFS hop limit for traverse (clamped 1..5)
+    limit: 10                          # Max graph nodes returned (clamped 1..50)
+    find_tunnels: false                # Also find cross-wing tunnels in prefetch
 ```
 
 `prefetch()` / `queue_prefetch()` accept optional `prefetch_wing` / `prefetch_room` (or `wing` / `room` in kwargs) so callers can supply session metadata for L2. L3 remains hybrid `search_memories` + lexical fallback (deep semantic search).

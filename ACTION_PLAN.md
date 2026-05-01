@@ -121,9 +121,9 @@ Expected:
 
 **Sources:** [The Palace](https://mempalaceofficial.com/concepts/the-palace.html), [MCP navigation / palace_graph](https://mempalaceofficial.com/reference/mcp-tools.html).
 
-- [ ] Forward configured or session-derived `wing` / `room` on every search call.
-- [ ] Optional graph-assisted prefetch: `palace_graph.traverse` / `find_tunnels` behind a flag; strict hop/result limits.
-- [ ] Document halls (`hall_facts`, `hall_events`, …) vs miner metadata; note `mempalace init` / `mine` for hall-rich corpora.
+- [x] Forward configured or session-derived `wing` / `room` on every search call.
+- [x] Optional graph-assisted prefetch: `palace_graph.traverse` / `find_tunnels` behind a flag; strict hop/result limits.
+- [x] Document halls (`hall_facts`, `hall_events`, …) vs miner metadata; note `mempalace init` / `mine` for hall-rich corpora.
 - [ ] Document MCP-only tunnel tools unless product requires tunnel-aware recall in Hermes-only mode.
 
 ## Phase 10: Knowledge graph in recall and contradiction follow-up
