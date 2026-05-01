@@ -122,6 +122,77 @@ HERMES_ENABLE_MEMPALACE_SESSION_IMPORTER=0   # disable the hook
 HERMES_MEMPALACE_IMPORTER=/path/to/importer.py
 ```
 
+## CLI Operator Guide
+
+### Onboarding
+
+```bash
+# 1. Initialize a MemPalace
+mempalace init ~/.mempalace/palace
+
+# 2. (Optional) Mine existing content into the palace
+mempalace mine ~/.mempalace/palace
+
+# 3. (Optional) Generate L0+L1 wake-up context
+mempalace wake-up ~/.mempalace/palace
+
+# 4. Start MCP server (for direct tool access)
+mempalace mcp
+
+# 5. Configure Hermes
+# Add to ~/.hermes/config.yaml:
+#   memory:
+#     provider: mempalace
+#   mempalace_memory:
+#     enabled: true
+#     palace_data_dir: ~/.mempalace/palace
+```
+
+### Troubleshooting
+
+```bash
+# Check palace status
+mempalace status ~/.mempalace/palace
+
+# Repair a corrupted palace
+mempalace repair ~/.mempalace/palace
+
+# Check plugin diagnostics
+hermes memory status
+
+# Test MCP connectivity
+hermes mcp test mempalace
+
+# Check effective config
+python -c "
+import sys; sys.path.insert(0, '$HOME/.hermes/plugins/mempalace')
+from __init__ import load_config
+cfg = load_config()
+print(f'enabled={cfg.enabled}, palace={cfg.palace_data_dir}')
+print(f'retrieval={cfg.retrieval_mode}, stack={cfg.memory_stack_enabled}')
+print(f'diary={cfg.diary_enabled}, aaak={cfg.aaak_enabled}')
+"
+```
+
+### Path Mapping
+
+| CLI flag | Hermes config | Environment variable |
+|----------|--------------|---------------------|
+| `--palace` | `mempalace_memory.palace_data_dir` | `MEMPALACE_PALACE_DIR` |
+| (auto) | `mempalace_memory.mempalace_lib_dir` | `MEMPALACE_LIB_DIR` / `MEMPALACE_ROOT` |
+
+### Session Importer
+
+The background session importer runs on `on_session_end`:
+
+```bash
+# Disable
+HERMES_ENABLE_MEMPALACE_SESSION_IMPORTER=0
+
+# Custom importer path
+HERMES_MEMPALACE_IMPORTER=/path/to/importer.py
+```
+
 ## Verification Commands
 
 ```bash

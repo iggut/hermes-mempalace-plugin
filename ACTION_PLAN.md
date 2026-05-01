@@ -164,9 +164,9 @@ Expected:
 
 **Source:** [CLI](https://mempalaceofficial.com/reference/cli.html).
 
-- [ ] Onboarding: `mempalace init` → optional `mine` / `wake-up` → `mempalace mcp` → Hermes `memory.provider: mempalace` + paths.
-- [ ] Incident docs: `mempalace repair`, `mempalace status`; `split` + `mempalace_session_importer`.
-- [ ] Document CLI `--palace` ↔ Hermes `palace_data_dir`.
+- [x] Onboarding: `mempalace init` → optional `mine` / `wake-up` → `mempalace mcp` → Hermes `memory.provider: mempalace` + paths.
+- [x] Incident docs: `mempalace repair`, `mempalace status`; `split` + `mempalace_session_importer`.
+- [x] Document CLI `--palace` ↔ Hermes `palace_data_dir`.
 
 ## Phase 15: Fact extraction quality
 
