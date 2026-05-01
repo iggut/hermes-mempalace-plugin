@@ -202,6 +202,24 @@ hermes memory status
 hermes mcp test mempalace
 ```
 
+## Diagnostics
+
+The provider exposes `diagnostics()` which returns a snapshot of internal state:
+
+```python
+provider = load_plugin()
+print(provider.diagnostics())
+```
+
+Key fields:
+- `enabled`, `initialized`, `available` — provider state
+- `session_id` — current session
+- `prefetch_cache_size`, `prefetch_cache_limit` — cache utilization
+- `prefetch_inflight` — active background prefetch threads
+- `background_threads` — tracked background workers
+- `metrics` — counters: searches, cache hits/misses/evictions, ingest attempts/errors, KG operations, memory stack wake-ups
+- `memory_stack_enabled`, `wake_block_chars` — memory stack state
+
 ## Future Improvements
 
 1. Replace regex fact extraction with explicit, schema-validated LLM extraction before enabling by default.

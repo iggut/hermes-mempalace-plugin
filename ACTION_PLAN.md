@@ -176,10 +176,10 @@ Expected:
 
 ## Phase 16: Diagnostics, tests, packaging
 
-- [ ] Surface `diagnostics()` / effective config via `hermes memory status` or doc until upstream seam exists.
-- [ ] Optional integration test: real `mempalace` + fixture palace (skipped by default).
+- [x] Surface `diagnostics()` / effective config via `hermes memory status` or doc until upstream seam exists.
+- [x] Optional integration test: real `mempalace` + fixture palace (skipped by default).
 - [ ] Load/concurrency: prefetch latency, thread join budget.
-- [ ] `plugin.yaml` version/description; optional `CHANGELOG.md` / README release notes.
+- [x] `plugin.yaml` version/description; optional `CHANGELOG.md` / README release notes.
 
 ### Execution order (Phases 7–16)
 
