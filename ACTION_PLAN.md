@@ -170,7 +170,7 @@ Expected:
 
 ## Phase 15: Fact extraction quality
 
-- [ ] Audit `SchemaValidatedFactExtractor` regexes (fix broken fragments); safe default `none` until LLM extraction exists.
+- [x] Audit `SchemaValidatedFactExtractor` regexes (fix broken fragments); safe default `none` until LLM extraction exists.
 - [ ] Optional validated LLM extraction when Hermes supports a safe callout.
 - [x] Wire `allowed_predicates` from config into extractor.
 
