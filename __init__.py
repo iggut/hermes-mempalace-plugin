@@ -53,6 +53,7 @@ import hashlib
 import logging
 import os
 import re
+import subprocess
 import sys
 import threading
 import time
@@ -62,6 +63,42 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
+
+
+def _env_enabled(name: str, default: bool = False) -> bool:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in ("1", "true", "yes", "on")
+
+
+def _importer_path() -> Path:
+    return Path(
+        os.environ.get(
+            "HERMES_MEMPALACE_IMPORTER",
+            Path.home() / ".hermes" / "scripts" / "hermes_chat_importer.py",
+        )
+    ).expanduser()
+
+
+def _launch_session_importer() -> bool:
+    importer = _importer_path()
+    if not importer.exists():
+        logger.debug("[MemPalaceMemory] session importer missing at %s", importer)
+        return False
+    try:
+        subprocess.Popen(
+            [sys.executable, str(importer)],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+            env={**os.environ, "MEMPALACE_BACKGROUND_IMPORT": "1"},
+        )
+        logger.debug("[MemPalaceMemory] background chat import launched")
+        return True
+    except Exception as exc:
+        logger.warning("[MemPalaceMemory] failed to launch background import: %s", exc)
+        return False
 
 # Import MemoryProvider ABC for plugin registration. When the plugin is
 # imported outside Hermes (for direct tests), fall back to object so the module
@@ -1337,6 +1374,8 @@ class MemPalaceMemoryProvider(_MP_ABC):
         del session_id, kwargs
         if self._config.ingestion_mode == "each_turn":
             pass
+        if _env_enabled("HERMES_ENABLE_MEMPALACE_SESSION_IMPORTER", default=True):
+            _launch_session_importer()
         self._join_background_threads()
 
     def shutdown(self) -> None:
