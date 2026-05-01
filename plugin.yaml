@@ -1,0 +1,10 @@
+# MemPalace Memory Plugin — config-activated retrieval provider
+name: mempalace_memory
+version: "1.2.0"
+description: "Production-hardened Hermes MemoryProvider for MemPalace: config-activated bounded recall, diagnostics, safe cache/thread lifecycle, optional ingestion, optional memory mirroring, and optional Holographic overlay."
+author: Jupiter
+kind: exclusive
+requires_env: []
+provides_tools: []
+provides_hooks: [on_session_start, on_session_end]
+provides_memory_provider: mempalace
