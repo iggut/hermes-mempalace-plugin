@@ -371,24 +371,10 @@ class MemPalaceAPI:
         if col is None:
             return self._fallback_drawer_id(wing, room, content)
 
-        # Duplicate check
-        thr = duplicate_threshold if duplicate_threshold is not None else self._config.duplicate_threshold
-        threshold_dist = 1.0 - thr
-        try:
-            result = col.query(
-                query_texts=[content],
-                n_results=1,
-                include=["ids", "distances", "metadatas", "documents"],
-            )
-            distances = result.get("distances") or [[]]
-            if distances and distances[0] and distances[0][0] <= threshold_dist:
-                existing_ids = result.get("ids") or [[]]
-                if existing_ids and existing_ids[0]:
-                    return str(existing_ids[0][0])
-        except Exception as e:
-            logger.debug("[MemPalaceAPI] add_drawer duplicate check failed: %s", e)
+        existing = self._check_duplicate(content, col)
+        if existing:
+            return existing
 
-        # Write
         return self._write_drawer(col, content, wing, room, source_file, agent)
 
     def _write_drawer(
@@ -444,8 +430,15 @@ class MemPalaceAPI:
                 idx = int(chunk.get("chunk_index", 0))
                 if not body:
                     continue
-                did = self._write_drawer(col, body, wing, room, src, agent)
-                added.append(did)
+                did = self.add_drawer(
+                    body,
+                    wing=wing,
+                    room=room,
+                    source_file=src,
+                    agent=agent,
+                )
+                if did:
+                    added.append(did)
         except Exception as e:
             logger.debug("[MemPalaceAPI] chunk_and_add failed: %s", e)
 

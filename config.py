@@ -163,6 +163,11 @@ class MemPalaceConfig:
     recall_char_budget: int = 1500
     recall_n_results: int = 10
 
+    @property
+    def retrieval_timeout_seconds(self) -> float:
+        """Bounded retrieval timeout in seconds (derived from retrieval_timeout_ms)."""
+        return max(0.05, self.retrieval_timeout_ms / 1000.0)
+
 
 def _finalize_config(cfg: MemPalaceConfig) -> MemPalaceConfig:
     """Clamp all numeric fields to safe production bounds."""

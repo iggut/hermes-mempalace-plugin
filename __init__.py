@@ -16,13 +16,28 @@ from __future__ import annotations
 from .config import MemPalaceConfig, load_config
 from .api import MemPalaceAPI
 from .provider import MemPalaceMemoryProvider
+from .retrieval import MemPalaceRetrieval
 
 __all__ = [
     "load_config",
+    "load_memory_provider",
     "MemPalaceConfig",
     "MemPalaceAPI",
     "MemPalaceMemoryProvider",
+    "MemPalaceRetrieval",
+    "register",
 ]
+
+
+def load_memory_provider(config_data=None):
+    """Return a configured MemPalaceMemoryProvider for Hermes memory loading."""
+    cfg = load_config(config_data) if config_data is not None else load_config()
+    return MemPalaceMemoryProvider(cfg)
+
+
+def register(ctx) -> None:
+    """Hermes memory plugin entry: register MemPalaceMemoryProvider."""
+    ctx.register_memory_provider(load_memory_provider())
 
 
 def load_plugin():

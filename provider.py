@@ -18,6 +18,11 @@ from .retrieval import MemPalaceRetrieval
 
 logger = logging.getLogger(__name__)
 
+try:
+    from agent.memory_provider import MemoryProvider as _MemoryProvider
+except Exception:
+    _MemoryProvider = object  # type: ignore[misc,assignment]
+
 
 # ----------------------------------------------------------------
 # HolographicMirror — real implementation or explicitly unavailable
@@ -43,8 +48,9 @@ class HolographicMirror:
     def _check_available(self) -> None:
         if HolographicMirror._available is not None:
             return
+        self._api._ensure_imported()
         try:
-            from mempalace.holographic import HolographicMemoryStore
+            from mempalace.holographic import HolographicMemoryStore  # noqa: F401
             HolographicMirror._available = True
         except Exception:
             HolographicMirror._available = False
@@ -101,7 +107,7 @@ class HolographicMirror:
 # ----------------------------------------------------------------
 
 
-class MemPalaceMemoryProvider:
+class MemPalaceMemoryProvider(_MemoryProvider):
     """MemPalace-backed Hermes MemoryProvider.
 
     Thin lifecycle adapter. All real work delegates to:
@@ -144,6 +150,10 @@ class MemPalaceMemoryProvider:
         self._retrieval: Optional[MemPalaceRetrieval] = None
         self._holo_mirror: Optional[HolographicMirror] = None
 
+    @property
+    def name(self) -> str:
+        return "mempalace"
+
     # ----------------------------------------------------------------
     # Availability
     # ----------------------------------------------------------------
@@ -152,7 +162,8 @@ class MemPalaceMemoryProvider:
         if not self._config.enabled:
             return False
         if self._mp_api is not None:
-            return bool(getattr(self._mp_api, "is_available", False)())
+            available = getattr(self._mp_api, "is_available", False)
+            return bool(available() if callable(available) else available)
         # Pre-check palace path exists
         from pathlib import Path
         if not self._config.palace_data_dir or not Path(self._config.palace_data_dir).exists():
@@ -266,6 +277,7 @@ class MemPalaceMemoryProvider:
 
         # Memory stack L0/L1 wake block
         if self._wake_block and not self._wake_prefetch_applied:
+            self._wake_prefetch_applied = True
             return self._wake_block
 
         wing = str(kwargs.get("prefetch_wing") or kwargs.get("wing") or "")
@@ -331,8 +343,9 @@ class MemPalaceMemoryProvider:
 
     def sync_turn(
         self,
-        role: str,
-        content: str,
+        user_content: str,
+        assistant_content: str = "",
+        *,
         session_id: str = "",
         **kwargs,
     ) -> None:
@@ -345,23 +358,30 @@ class MemPalaceMemoryProvider:
             return
         if self._config.ingestion_mode not in ("each_turn",):
             return
-        if not content or len(content) < self._config.min_turn_length:
+
+        parts = []
+        if user_content:
+            parts.append(f"user: {user_content}")
+        if assistant_content:
+            parts.append(f"assistant: {assistant_content}")
+        combined = "\n".join(parts)
+        if not combined or len(combined) < self._config.min_turn_length:
             return
 
         self._ensure_api()
         self._turn_count += 1
 
-        # Truncate to max_turn_length before chunking
-        content = content[: self._config.max_turn_length]
+        combined = combined[: self._config.max_turn_length]
 
         def _ingest():
             self._metric("ingest_attempts")
             try:
-                combined = f"{role}: {content}"
                 agent = self._config.agent_name or "hermes"
                 wing = self._config.target_wing
                 room = self._config.target_room
-                source = self._turn_source_file(session_id=session_id or self._session_id, content=content)
+                source = self._turn_source_file(
+                    session_id=session_id or self._session_id, content=combined
+                )
 
                 # Chunk and add with duplicate check on each chunk
                 self._mp_api.chunk_and_add(
@@ -617,6 +637,10 @@ class MemPalaceMemoryProvider:
     # ----------------------------------------------------------------
     # Config schema
     # ----------------------------------------------------------------
+
+    def get_tool_schemas(self) -> List[Dict[str, Any]]:
+        """MemPalace recall is automatic; MCP tools are separate."""
+        return []
 
     def get_config_schema(self) -> List[Dict[str, Any]]:
         # Schema is static — available even before API is initialized

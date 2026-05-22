@@ -334,8 +334,8 @@ def test_sync_turn_enforces_max_turn_length():
     provider = mod.MemPalaceMemoryProvider(cfg)
     provider._mp_api = FakeAPI()
     # retrieval disabled so sync_turn uses _mp_api directly
-    provider.sync_turn('user', 'abcdefghij klmnopqrstuvwxyz', session_id='s')
-    assert captured == ['user: abcdefghij k']
+    provider.sync_turn('abcdefghij klmnopqrstuvwxyz', '', session_id='s')
+    assert captured == ['user: abcdef']
 
 
 def test_background_retrieval_false_runs_inline(monkeypatch):
@@ -431,43 +431,54 @@ def test_on_session_start_loads_wake_when_configured():
     out = provider.prefetch('hi', session_id='sess1')
     assert 'L0L1' in out
     out2 = provider.prefetch('hi', session_id='sess1')
-    assert out2 == out
+    assert provider._wake_prefetch_applied is True
+    assert 'L0L1' not in out2
 
 
 def test_prefetch_scoped_recall_uses_l2_default_room():
-    """prefetch uses L2 scoped recall when memory_stack_enabled and l2_before_deep_search."""
-    # This test verifies L2 config is passed correctly to retrieval.
-    # The actual scoped_recall call happens inside retrieval._l2_scoped_recall.
-    # Since we can't import MemPalaceRetrieval (not a real package), we verify
-    # the config is set and the provider has the right settings.
+    """Retrieval calls scoped_recall with target_wing and l2_default_room."""
     mod = load_plugin()
+    calls = []
+
+    class FakeAPI:
+        def search(self, **kwargs):
+            return []
+        def scoped_recall(self, wing, room=None, char_budget=1500):
+            calls.append((wing, room, char_budget))
+            return 'L2-hit'
+
     cfg = mod.MemPalaceConfig(
         enabled=True, retrieval_enabled=True,
         memory_stack_enabled=True, l2_before_deep_search=True,
         l2_default_room='auth', target_wing='tw',
         background_retrieval=False,
     )
-    provider = mod.MemPalaceMemoryProvider(cfg)
-    assert provider._config.l2_before_deep_search is True
-    assert provider._config.l2_default_room == 'auth'
-    assert provider._config.target_wing == 'tw'
-    # Verify retrieval instance would be created with L2 settings
-    assert provider._config.retrieval_enabled is True
+    retrieval = mod.MemPalaceRetrieval(FakeAPI(), cfg)
+    result = retrieval._fetch_with_timeout(('s', 'q', '', ''), 'q', '', '', timeout=1.0)
+    assert calls == [('tw', 'auth', cfg.recall_char_budget)]
+    assert 'L2-hit' in result
 
 
 def test_prefetch_passes_explicit_wing_to_scoped_recall():
-    """prefetch passes explicit prefetch_wing to retrieval via kwargs."""
+    """L2 scoped recall uses explicit prefetch_wing over target_wing."""
     mod = load_plugin()
+    calls = []
+
+    class FakeAPI:
+        def search(self, **kwargs):
+            return []
+        def scoped_recall(self, wing, room=None, char_budget=1500):
+            calls.append((wing, room))
+            return 'scoped'
+
     cfg = mod.MemPalaceConfig(
         enabled=True, retrieval_enabled=True,
         memory_stack_enabled=True, l2_before_deep_search=True,
-        background_retrieval=False,
+        target_wing='tw', background_retrieval=False,
     )
-    provider = mod.MemPalaceMemoryProvider(cfg)
-    assert provider._config.retrieval_enabled is True
-    # The prefetch_wing/kw arguments are passed through to retrieval.prefetch()
-    # We verify this by checking that retrieval kwargs reach the mp_api search method
-    # when retrieval is properly configured.
+    retrieval = mod.MemPalaceRetrieval(FakeAPI(), cfg)
+    retrieval._fetch_with_timeout(('s', 'q', 'explicit_wing', 'room-a'), 'q', 'explicit_wing', 'room-a', timeout=1.0)
+    assert calls == [('explicit_wing', 'room-a')]
 
 
 def test_system_prompt_block_reports_active_features():
@@ -715,3 +726,139 @@ def test_build_session_summary_empty_for_no_messages():
     mod = load_plugin()
     provider = mod.MemPalaceMemoryProvider(mod.MemPalaceConfig(enabled=True))
     assert provider._build_session_summary([]) == ''
+
+
+def test_retrieval_timeout_seconds_property():
+    mod = load_plugin()
+    cfg = mod.MemPalaceConfig(enabled=True, retrieval_timeout_ms=500)
+    assert cfg.retrieval_timeout_seconds == 0.5
+    cfg2 = mod.MemPalaceConfig(enabled=True, retrieval_timeout_ms=50)
+    assert cfg2.retrieval_timeout_seconds == 0.05
+
+
+def test_prefetch_does_not_require_missing_timeout_attr():
+    mod = load_plugin()
+
+    class FakeAPI:
+        def search(self, **kwargs):
+            return [{'content': 'hit', 'score': 0.9, 'source_file': 'x'}]
+
+    cfg = mod.MemPalaceConfig(
+        enabled=True, retrieval_enabled=True, background_retrieval=False,
+    )
+    provider = mod.MemPalaceMemoryProvider(cfg)
+    provider._initialized = True
+    provider._mp_api = FakeAPI()
+    provider._retrieval = mod.MemPalaceRetrieval(FakeAPI(), cfg)
+    result = provider.prefetch('hello', session_id='s1')
+    assert isinstance(result, str)
+
+
+def test_provider_is_available_with_property_backed_api():
+    mod = load_plugin()
+    provider = mod.MemPalaceMemoryProvider(mod.MemPalaceConfig(enabled=True))
+
+    class FakeAPI:
+        @property
+        def is_available(self):
+            return True
+
+    provider._mp_api = FakeAPI()
+    assert provider.is_available() is True
+
+
+def test_provider_name_contract():
+    mod = load_plugin()
+    provider = mod.MemPalaceMemoryProvider(mod.MemPalaceConfig(enabled=True))
+    assert provider.name == 'mempalace'
+    for method in (
+        'initialize', 'prefetch', 'queue_prefetch', 'sync_turn',
+        'on_session_start', 'on_session_end', 'shutdown',
+    ):
+        assert hasattr(provider, method)
+
+
+def test_load_memory_provider_returns_usable_provider():
+    mod = load_plugin()
+    provider = mod.load_memory_provider({'memory': {'provider': 'mempalace'}})
+    assert provider.name == 'mempalace'
+    assert provider.is_available() is False or provider.is_available() is True
+
+
+def test_register_exposes_provider():
+    mod = load_plugin()
+
+    class Ctx:
+        def __init__(self):
+            self.provider = None
+        def register_memory_provider(self, provider):
+            self.provider = provider
+
+    ctx = Ctx()
+    mod.register(ctx)
+    assert ctx.provider is not None
+    assert ctx.provider.name == 'mempalace'
+
+
+def test_chunk_and_add_duplicate_checks_each_chunk():
+    mod = load_plugin()
+    add_calls = []
+
+    class FakeCollection:
+        def query(self, **kwargs):
+            return {'ids': [[]], 'distances': [[]]}
+
+    api = mod.MemPalaceAPI(
+        '/tmp/no-palace',
+        config=mod.MemPalaceConfig(duplicate_check_enabled=True),
+    )
+    api._imported = True
+    api._col = FakeCollection()
+    api._chunk_text_fn = lambda content, src: [
+        {'content': 'chunk-one', 'chunk_index': 0},
+        {'content': 'chunk-two', 'chunk_index': 1},
+    ]
+    api._miner_add_drawer_fn = None
+    original_add = api.add_drawer
+
+    def tracking_add(content, **kwargs):
+        add_calls.append(content)
+        return original_add(content, **kwargs)
+
+    api.add_drawer = tracking_add  # type: ignore[method-assign]
+    ids = api.chunk_and_add('long body', wing='w', room='r')
+    assert add_calls == ['chunk-one', 'chunk-two']
+    assert len(ids) == 2
+
+
+def test_add_drawer_skips_duplicate_when_disabled():
+    mod = load_plugin()
+    query_calls = []
+
+    class FakeCollection:
+        def query(self, **kwargs):
+            query_calls.append(kwargs)
+            return {'ids': [['drawer_existing']], 'distances': [[0.01]]}
+
+    api = mod.MemPalaceAPI('/tmp/no-palace')
+    api._imported = True
+    api._col = FakeCollection()
+    api._config = mod.MemPalaceConfig(duplicate_check_enabled=False)
+    drawer_id = api.add_drawer('same content')
+    assert query_calls == []
+    assert drawer_id.startswith('drawer_')
+
+
+def test_wake_block_only_injected_once():
+    mod = load_plugin()
+    provider = mod.MemPalaceMemoryProvider(mod.MemPalaceConfig(
+        enabled=True, memory_stack_enabled=True, wake_up_on_session_start=True,
+        background_retrieval=False, retrieval_enabled=False,
+    ))
+    provider._initialized = True
+    provider._wake_block = 'WAKE-ONCE'
+    first = provider.prefetch('q', session_id='s')
+    second = provider.prefetch('q', session_id='s')
+    assert first == 'WAKE-ONCE'
+    assert second == ''
+    assert provider._wake_prefetch_applied is True

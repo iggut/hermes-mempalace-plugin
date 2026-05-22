@@ -250,13 +250,43 @@ class MemPalaceRetrieval:
         if result:
             self._cache.set(key, result)
 
+    def _l2_scoped_recall(self, wing: str, room: str) -> str:
+        """L2 scoped recall when memory stack is enabled."""
+        if not self._config.memory_stack_enabled or not self._config.l2_before_deep_search:
+            return ""
+        use_wing = wing or self._config.target_wing or self._config.wake_up_wing or ""
+        use_room = room or self._config.l2_default_room or None
+        if not use_wing:
+            return ""
+        try:
+            return self._api.scoped_recall(
+                use_wing,
+                room=use_room,
+                char_budget=self._config.recall_char_budget,
+            )
+        except Exception as e:
+            logger.debug("[MemPalaceRetrieval] L2 scoped_recall failed: %s", e)
+            return ""
+
     def _fetch_with_timeout(
         self, key: Any, query: str, wing: str, room: str, timeout: float
     ) -> str:
-        """Run search, KG facts, graph, all with hard timeout."""
+        """Run L2 recall, search, KG facts, graph, all with hard timeout."""
         parts = []
         total_chars = 0
         MAX_CHARS = 2000
+
+        l2_text = self._l2_scoped_recall(wing, room)
+        if l2_text:
+            parts.append(l2_text[: self._config.recall_char_budget])
+            total_chars += len(parts[-1]) + 1
+            if (
+                self._config.l2_skip_deep_search_when_recall_non_empty
+                and total_chars > 0
+            ):
+                result = "\n".join(parts)
+                self._cache.set(key, result)
+                return result
 
         def fetch_search():
             return self._api.search(
