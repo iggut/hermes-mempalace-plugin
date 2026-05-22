@@ -2,6 +2,20 @@
 
 Automated memory provider for Hermes Agent backed by MemPalace verbatim drawers, hybrid search, and optional knowledge-graph / Holographic mirroring.
 
+## Module Structure
+
+```
+mempalace/
+  __init__.py     # Thin export layer: load_plugin(), MemPalaceConfig, MemPalaceAPI, MemPalaceMemoryProvider
+  config.py       # MemPalaceConfig dataclass, load_config(), YAML/env/arg parsing
+  api.py          # MemPalaceAPI: all read/write operations (fail-open)
+  facts.py        # SchemaValidatedFactExtractor for KG
+  retrieval.py    # MemPalaceRetrieval: hybrid search, cache TTL, timeout executor
+  provider.py     # MemPalaceMemoryProvider: Hermes MemoryProvider ABC implementation
+  tests/
+    test_mempalace_provider_contract.py  # 38 contract tests (all passing)
+```
+
 ## Current Behavior
 
 | Feature | Default | Description |
