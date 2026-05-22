@@ -144,9 +144,11 @@ class MemPalaceRetrieval:
         self,
         api,  # MemPalaceAPI instance
         config,  # MemPalaceConfig instance
+        metric_fn: Optional[Callable[[str], None]] = None,
     ):
         self._api = api
         self._config = config
+        self._metric = metric_fn or (lambda _name: None)
         self._cache = RetrievalCache(
             max_size=config.prefetch_cache_size,
             ttl_seconds=config.cache_ttl_seconds,
@@ -182,6 +184,7 @@ class MemPalaceRetrieval:
         # Try stale cache as immediate fallback (don't wait)
         stale = self._cache.get_stale(key)
         if stale is not None:
+            self._metric("stale_cache_hits")
             # Serve stale immediately, refresh in background
             if background:
                 self._start_inflight_refresh(key, query, prefetch_wing, prefetch_room)
@@ -278,6 +281,7 @@ class MemPalaceRetrieval:
 
         l2_text = self._l2_scoped_recall(wing, room)
         if l2_text:
+            self._metric("l2_recalls")
             parts.append(l2_text[: self._config.recall_char_budget])
             total_chars += len(parts[-1]) + 1
             if (
@@ -297,9 +301,11 @@ class MemPalaceRetrieval:
                 min_score=self._config.min_score,
             )
 
+        self._metric("l3_searches")
         # Semantic search with real timeout
         results = _run_with_timeout(fetch_search, timeout)
         if results is None:
+            self._metric("retrieval_timeouts")
             logger.debug("[MemPalaceRetrieval] search timed out or errored")
             results = []
 

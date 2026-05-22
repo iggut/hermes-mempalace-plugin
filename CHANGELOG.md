@@ -1,5 +1,29 @@
 # Changelog
 
+## 1.4.1 (2026-05-22)
+
+### Operator hardening
+
+- Added `CHANGELOG.md` release notes for the modular line (1.4.0 / 1.4.1).
+- Added `docs/operator-smoke-test.md` documenting the local validation gate.
+- Added `scripts/smoke.sh` to run py_compile, pytest, `hermes memory status`, `hermes mcp test mempalace`, and `load_memory_provider("mempalace")` contract smoke.
+- Extended `diagnostics()["metrics"]` with backward-compatible counters: `retrieval_timeouts`, `stale_cache_hits`, `duplicate_hits`, `duplicate_misses`, `chunk_writes`, `l2_recalls`, `l3_searches` (existing keys unchanged).
+
+### Provider contract (included in 56141fd baseline)
+
+- `load_memory_provider()` and `register()` for Hermes memory plugin loading.
+- `retrieval_timeout_seconds` on `MemPalaceConfig`.
+- Centralized duplicate check in `MemPalaceAPI.add_drawer()`.
+
+## 1.4.0 (2026-05-22)
+
+### Modular refactor
+
+- Split monolithic `__init__.py` into `config.py`, `api.py`, `facts.py`, `retrieval.py`, `provider.py` with thin loader exports.
+- Hermes `MemoryProvider` contract: `sync_turn`, empty `get_tool_schemas()`, bounded prefetch/ingest, diagnostics snapshot.
+- Default posture: retrieval on; ingestion, fact extraction, KG-in-prefetch, graph, holographic, diary, AAAK, and memory stack off unless opted in.
+- Contract test suite expanded (47+ passing with integration skips when palace/MCP unavailable).
+
 ## 1.3.0 (2026-05-01)
 
 ### New Features

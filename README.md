@@ -209,6 +209,14 @@ HERMES_MEMPALACE_IMPORTER=/path/to/importer.py
 
 ## Verification Commands
 
+Operator gate (compile, pytest, Hermes status, MCP test, provider load): see [docs/operator-smoke-test.md](docs/operator-smoke-test.md) or run:
+
+```bash
+~/.hermes/plugins/mempalace/scripts/smoke.sh
+```
+
+Quick manual checks:
+
 ```bash
 python -m py_compile ~/.hermes/plugins/mempalace/__init__.py
 /home/iggut/.hermes/hermes-agent/venv/bin/python3 -m pytest -q ~/.hermes/plugins/mempalace/tests/test_mempalace_provider_contract.py
@@ -231,7 +239,7 @@ Key fields:
 - `prefetch_cache_size`, `prefetch_cache_limit` — cache utilization
 - `prefetch_inflight` — active background prefetch threads
 - `background_threads` — tracked background workers
-- `metrics` — counters: searches, cache hits/misses/evictions, ingest attempts/errors, KG operations, memory stack wake-ups
+- `metrics` — counters: prefetch cache hits/misses/evictions, retrieval timeouts, stale cache hits, duplicate hits/misses, chunk writes, L2 recalls, L3 searches, ingest attempts/errors (see [docs/operator-smoke-test.md](docs/operator-smoke-test.md))
 - `memory_stack_enabled`, `wake_block_chars` — memory stack state
 
 ## Future Improvements

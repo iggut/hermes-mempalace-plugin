@@ -862,3 +862,101 @@ def test_wake_block_only_injected_once():
     assert first == 'WAKE-ONCE'
     assert second == ''
     assert provider._wake_prefetch_applied is True
+
+
+def test_diagnostics_metrics_include_operator_counters():
+    mod = load_plugin()
+    provider = mod.MemPalaceMemoryProvider(mod.MemPalaceConfig(enabled=True))
+    metrics = provider.diagnostics()['metrics']
+    for key in (
+        'prefetch_cache_hits',
+        'retrieval_timeouts',
+        'stale_cache_hits',
+        'duplicate_hits',
+        'duplicate_misses',
+        'chunk_writes',
+        'l2_recalls',
+        'l3_searches',
+    ):
+        assert key in metrics
+        assert metrics[key] == 0
+
+
+def test_api_metrics_duplicate_hit_and_miss():
+    mod = load_plugin()
+    events = []
+
+    query_calls = [0]
+
+    class FakeCollection:
+        def query(self, **kwargs):
+            query_calls[0] += 1
+            if query_calls[0] == 1:
+                return {
+                    'ids': [['drawer_existing']],
+                    'distances': [[0.01]],
+                    'metadatas': [[{}]],
+                    'documents': [['dup']],
+                }
+            return {'ids': [[]], 'distances': [[]], 'metadatas': [[]], 'documents': [[]]}
+
+        def add(self, **kwargs):
+            pass
+
+    api = mod.MemPalaceAPI(
+        '/tmp/no-palace',
+        config=mod.MemPalaceConfig(duplicate_check_enabled=True),
+        metric_fn=lambda name: events.append(name),
+    )
+    api._imported = True
+    api._col = FakeCollection()
+    api.add_drawer('dup')
+    api.add_drawer('fresh')
+    assert events.count('duplicate_hits') == 1
+    assert events.count('duplicate_misses') == 1
+    assert events.count('chunk_writes') == 1
+
+
+def test_retrieval_metrics_stale_cache_hit():
+    mod = load_plugin()
+    events = []
+
+    class FakeAPI:
+        def search(self, *a, **k):
+            return []
+
+    cfg = mod.MemPalaceConfig(enabled=True, background_retrieval=False, cache_ttl_seconds=1)
+    retrieval = mod.MemPalaceRetrieval(FakeAPI(), cfg, metric_fn=lambda name: events.append(name))
+    key = retrieval._cache.prefetch_key('q', 's', 'w', 'r')
+    retrieval._cache.set(key, 'stale-body')
+    retrieval._cache._cache[key].timestamp = time.time() - 60
+
+    stale = retrieval.prefetch('q', session_id='s', prefetch_wing='w', prefetch_room='r', background=False)
+    assert stale == 'stale-body'
+    assert 'stale_cache_hits' in events
+
+
+def test_retrieval_metrics_l2_l3_and_timeout():
+    mod = load_plugin()
+    events = []
+
+    class FakeAPI:
+        def scoped_recall(self, wing, room=None, char_budget=1500):
+            return 'L2-text'
+
+        def search(self, *a, **k):
+            time.sleep(0.2)
+            return [{'content': 'hit', 'score': 0.9, 'drawer_id': 'd1', 'source_file': 't'}]
+
+    cfg = mod.MemPalaceConfig(
+        enabled=True,
+        memory_stack_enabled=True,
+        l2_before_deep_search=True,
+        background_retrieval=False,
+        retrieval_timeout_ms=50,
+    )
+    retrieval = mod.MemPalaceRetrieval(FakeAPI(), cfg, metric_fn=lambda name: events.append(name))
+    retrieval.prefetch('fresh-q', session_id='s2', background=False)
+    assert 'l2_recalls' in events
+    assert 'l3_searches' in events
+    assert 'retrieval_timeouts' in events

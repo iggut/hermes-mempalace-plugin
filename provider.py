@@ -141,6 +141,13 @@ class MemPalaceMemoryProvider(_MemoryProvider):
             "prefetch_cache_misses": 0,
             "prefetch_cache_evictions": 0,
             "prefetch_timeouts": 0,
+            "retrieval_timeouts": 0,
+            "stale_cache_hits": 0,
+            "duplicate_hits": 0,
+            "duplicate_misses": 0,
+            "chunk_writes": 0,
+            "l2_recalls": 0,
+            "l3_searches": 0,
             "ingest_attempts": 0,
             "ingest_errors": 0,
         }
@@ -181,9 +188,12 @@ class MemPalaceMemoryProvider(_MemoryProvider):
             palace_data_dir=self._config.palace_data_dir,
             mempalace_lib_dir=self._config.mempalace_lib_dir,
             config=self._config,
+            metric_fn=self._metric,
         )
         if self._config.retrieval_enabled:
-            self._retrieval = MemPalaceRetrieval(self._mp_api, self._config)
+            self._retrieval = MemPalaceRetrieval(
+                self._mp_api, self._config, metric_fn=self._metric
+            )
         if self._config.holographic_enabled:
             self._holo_mirror = HolographicMirror(self._config, self._mp_api)
             self._holo_mirror.ensure_enabled()

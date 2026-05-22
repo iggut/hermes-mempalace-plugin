@@ -13,7 +13,7 @@ import sys
 import threading
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from .config import MemPalaceConfig
 
@@ -48,10 +48,12 @@ class MemPalaceAPI:
         palace_data_dir: str = "",
         mempalace_lib_dir: str = "",
         config: Optional[MemPalaceConfig] = None,
+        metric_fn: Optional[Callable[[str], None]] = None,
     ):
         self._palace_data_dir = palace_data_dir or ""
         self._mempalace_lib_dir = mempalace_lib_dir or ""
         self._config = config or MemPalaceConfig()
+        self._metric = metric_fn or (lambda _name: None)
 
         self._imported = False
         self._import_error: Optional[str] = None
@@ -373,7 +375,10 @@ class MemPalaceAPI:
 
         existing = self._check_duplicate(content, col)
         if existing:
+            self._metric("duplicate_hits")
             return existing
+        if self._config.duplicate_check_enabled:
+            self._metric("duplicate_misses")
 
         return self._write_drawer(col, content, wing, room, source_file, agent)
 
@@ -399,6 +404,8 @@ class MemPalaceAPI:
                 )
         except Exception as e:
             logger.debug("[MemPalaceAPI] _write_drawer failed: %s", e)
+        else:
+            self._metric("chunk_writes")
         return drawer_id
 
     def _fallback_drawer_id(self, wing: str, room: str, content: str) -> str:
