@@ -1,0 +1,21 @@
+{
+  "_schema": "continual-learning-index/v1",
+  "_description": "Maps absolute paths of agent transcript .jsonl files to last-processed mtimeMs. Reprocess when file mtimeMs is greater than indexed value.",
+  "transcripts": {
+    "/home/iggut/.cursor/projects/home-iggut-hermes-plugins-mempalace/agent-transcripts/268c125e-0c3d-4004-b870-c26b51984e0d/268c125e-0c3d-4004-b870-c26b51984e0d.jsonl": {
+      "mtimeMs": 1777595621000
+    },
+    "/home/iggut/.cursor/projects/home-iggut-hermes-plugins-mempalace/agent-transcripts/2f6bbfdf-166e-462d-9d4a-c84ef809cb40/2f6bbfdf-166e-462d-9d4a-c84ef809cb40.jsonl": {
+      "mtimeMs": 1777598533000
+    },
+    "/home/iggut/.cursor/projects/home-iggut-hermes-plugins-mempalace/agent-transcripts/4d071070-f8f1-460b-a237-abfc08073f9c/4d071070-f8f1-460b-a237-abfc08073f9c.jsonl": {
+      "mtimeMs": 1777596196000
+    },
+    "/home/iggut/.cursor/projects/home-iggut-hermes-plugins-mempalace/agent-transcripts/bf521c8c-c550-452e-80e2-d9444accd83b/bf521c8c-c550-452e-80e2-d9444accd83b.jsonl": {
+      "mtimeMs": 1779426060000
+    },
+    "/home/iggut/.cursor/projects/home-iggut-hermes-plugins-mempalace/agent-transcripts/9046f782-649e-4b68-ba73-2b9ab4d71188/9046f782-649e-4b68-ba73-2b9ab4d71188.jsonl": {
+      "mtimeMs": 1779426229000
+    }
+  }
+}
