@@ -736,6 +736,18 @@ def test_retrieval_timeout_seconds_property():
     assert cfg2.retrieval_timeout_seconds == 0.05
 
 
+def test_run_with_timeout_handles_executor_shutdown_gracefully(monkeypatch):
+    load_plugin()
+    retrieval_mod = sys.modules['mempalace_plugin_contract.retrieval']
+
+    class DeadExecutor:
+        def submit(self, fn):
+            raise RuntimeError('cannot schedule new futures after interpreter shutdown')
+
+    monkeypatch.setattr(retrieval_mod, '_get_timeout_executor', lambda max_workers=4: DeadExecutor())
+    assert retrieval_mod._run_with_timeout(lambda: 'ok', 0.05) is None
+
+
 def test_prefetch_does_not_require_missing_timeout_attr():
     mod = load_plugin()
 
@@ -960,3 +972,37 @@ def test_retrieval_metrics_l2_l3_and_timeout():
     assert 'l2_recalls' in events
     assert 'l3_searches' in events
     assert 'retrieval_timeouts' in events
+
+
+def test_provider_exposes_full_native_tool_surface():
+    mod = load_plugin()
+    provider = mod.MemPalaceMemoryProvider(mod.MemPalaceConfig(enabled=True))
+
+    class FakeAPI:
+        def get_tool_schemas(self):
+            return [{
+                'name': 'mempalace_status',
+                'description': 'status',
+                'parameters': {'type': 'object', 'properties': {}},
+            }] * 30
+
+    provider._mp_api = FakeAPI()
+    schemas = provider.get_tool_schemas()
+    assert len(schemas) == 30
+    assert schemas[0]['name'] == 'mempalace_status'
+
+
+def test_provider_handle_tool_call_json_serializes_api_result():
+    mod = load_plugin()
+    provider = mod.MemPalaceMemoryProvider(mod.MemPalaceConfig(enabled=True))
+
+    class FakeAPI:
+        def handle_tool_call(self, tool_name, args):
+            assert tool_name == 'mempalace_status'
+            assert args == {'verbose': True}
+            return {'success': True, 'tool': tool_name}
+
+    provider._mp_api = FakeAPI()
+    result = provider.handle_tool_call('mempalace_status', {'verbose': True})
+    assert '"success": true' in result.lower()
+    assert 'mempalace_status' in result

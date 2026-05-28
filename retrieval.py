@@ -30,12 +30,15 @@ def _get_timeout_executor(max_workers: int = 4) -> ThreadPoolExecutor:
 
 def _run_with_timeout(fn: Callable[[], Any], timeout_seconds: float) -> Any:
     """Run fn in a bounded thread pool with hard timeout."""
-    executor = _get_timeout_executor()
-    future = executor.submit(fn)
     try:
+        executor = _get_timeout_executor()
+        future = executor.submit(fn)
         return future.result(timeout=timeout_seconds)
     except FuturesTimeoutError:
         logger.debug("[MemPalaceRetrieval] timed out after %.3fs", timeout_seconds)
+        return None
+    except RuntimeError as e:
+        logger.debug("[MemPalaceRetrieval] executor unavailable: %s", e)
         return None
     except Exception as e:
         logger.debug("[MemPalaceRetrieval] executor error: %s", e)

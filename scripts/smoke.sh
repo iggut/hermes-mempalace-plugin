@@ -34,9 +34,12 @@ from plugins.memory import load_memory_provider
 provider = load_memory_provider("mempalace")
 assert provider is not None
 assert provider.name == "mempalace"
-assert provider.get_tool_schemas() == []
+schemas = provider.get_tool_schemas()
+assert len(schemas) == 30, len(schemas)
+assert any(s["name"] == "mempalace_status" for s in schemas)
 diag = provider.diagnostics()
 assert diag["name"] == "mempalace"
+assert diag["native_tool_count"] == 30
 for key in (
     "prefetch_cache_hits",
     "retrieval_timeouts",

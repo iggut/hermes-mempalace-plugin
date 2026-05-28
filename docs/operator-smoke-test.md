@@ -75,9 +75,12 @@ p = load_memory_provider("mempalace")
 assert p is not None
 assert p.name == "mempalace"
 assert hasattr(p, "sync_turn")
-assert p.get_tool_schemas() == []
+schemas = p.get_tool_schemas()
+assert len(schemas) == 30, len(schemas)
+assert any(s["name"] == "mempalace_status" for s in schemas)
 diag = p.diagnostics()
 assert diag["name"] == "mempalace"
+assert diag["native_tool_count"] == 30
 metrics = diag["metrics"]
 for key in (
     "prefetch_cache_hits",

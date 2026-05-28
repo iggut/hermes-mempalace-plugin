@@ -24,3 +24,4 @@ htmlcov/
 # OS generated files
 .DS_Store
 Thumbs.db
+.cursor/hooks/state/continual-learning.json

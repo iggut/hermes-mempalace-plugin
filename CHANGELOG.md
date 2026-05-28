@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.5.0 (2026-05-28)
+
+### Native MemPalace tool bridge
+
+- Exposed the full 30-tool MemPalace surface natively through the Hermes `MemoryProvider` path via `get_tool_schemas()` and `handle_tool_call()`.
+- Reworked `api.py` to call MemPalace library modules directly for palace, graph, diary, sync, hook, and knowledge-graph operations instead of depending on MCP-only wrappers.
+- Fixed KG writes to use `KnowledgeGraph.add_triple()` / `invalidate()` and added compatibility fallbacks for older query signatures in tests.
+- Added `native_tool_count` to provider diagnostics and updated `plugin.yaml` to advertise the native tool surface.
+- Updated operator smoke/docs to assert the native tool bridge instead of the earlier empty-tool contract.
+
 ## 1.4.1 (2026-05-22)
 
 ### Operator hardening

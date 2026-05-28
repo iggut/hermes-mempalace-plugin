@@ -11,8 +11,8 @@
 ## Learned Workspace Facts
 
 - This repo is the Hermes MemPalace memory plugin at `~/.hermes/plugins/mempalace`; Hermes agent code lives at `~/.hermes/hermes-agent`.
-- Hermes integration entry points are `register(ctx)` and `load_memory_provider()`; the provider must subclass `agent.memory_provider.MemoryProvider`, expose `name == "mempalace"`, `sync_turn(user_content, assistant_content, ...)`, and `get_tool_schemas()` returning `[]` (recall is automatic; MCP tools are separate).
-- Modular layout: `config.py`, `api.py`, `facts.py`, `retrieval.py`, `provider.py`, with `__init__.py` as a thin export/loader layer; `plugin.yaml` advertises `provides_memory_provider: mempalace` and `provides_tools: []`.
+- Hermes integration entry points are `register(ctx)` and `load_memory_provider()`; the provider must subclass `agent.memory_provider.MemoryProvider`, expose `name == "mempalace"`, implement `sync_turn(user_content, assistant_content, ...)`, and expose the native `mempalace_*` tool surface through `get_tool_schemas()` / `handle_tool_call()`.
+- Modular layout: `config.py`, `api.py`, `facts.py`, `retrieval.py`, `provider.py`, with `__init__.py` as a thin export/loader layer; `plugin.yaml` advertises `provides_memory_provider: mempalace` plus the native MemPalace tool list.
 - Default posture is MemPalace-first: retrieval on; ingestion, fact extraction, KG facts in prefetch, graph, holographic, diary, AAAK, and memory stack off unless opted in.
 - Session-end chat import is not owned by the provider lifecycle; the separate `mempalace_session_importer` plugin handles that.
 - Config merges `plugins.mempalace`, `plugins.mempalace_memory`, and top-level `mempalace_memory`, plus `memory.provider: mempalace`; env overrides include `MEMPALACE_PALACE_DIR`, `MEMPALACE_LIB_DIR`, and `MEMPALACE_ROOT`.

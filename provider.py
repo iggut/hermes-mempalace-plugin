@@ -6,6 +6,7 @@ Does not implement a second memory system. Fail-open throughout.
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 import threading
 import time
@@ -649,8 +650,28 @@ class MemPalaceMemoryProvider(_MemoryProvider):
     # ----------------------------------------------------------------
 
     def get_tool_schemas(self) -> List[Dict[str, Any]]:
-        """MemPalace recall is automatic; MCP tools are separate."""
-        return []
+        """Expose native MemPalace tools through the Hermes memory-provider path."""
+        if not self._config.enabled:
+            return []
+        self._ensure_api()
+        if self._mp_api is None:
+            return []
+        try:
+            return self._mp_api.get_tool_schemas()
+        except Exception as e:
+            logger.warning("[MemPalace] get_tool_schemas failed: %s", e)
+            return []
+
+    def handle_tool_call(self, tool_name: str, args: Dict[str, Any], **kwargs) -> str:
+        self._ensure_api()
+        if self._mp_api is None:
+            return json.dumps({"error": "MemPalace API unavailable"})
+        try:
+            result = self._mp_api.handle_tool_call(tool_name, args or {})
+        except Exception as e:
+            logger.exception("[MemPalace] handle_tool_call failed for %s", tool_name)
+            result = {"error": str(e)}
+        return json.dumps(result, ensure_ascii=False, default=str)
 
     def get_config_schema(self) -> List[Dict[str, Any]]:
         # Schema is static — available even before API is initialized
@@ -675,6 +696,13 @@ class MemPalaceMemoryProvider(_MemoryProvider):
             cache_stats = self._retrieval._cache.stats()
             retrieval_stats = self._retrieval.diagnostics().get("retrieval_timeout_seconds", 0)
 
+        native_tool_count = 0
+        if self._config.enabled:
+            try:
+                native_tool_count = len(self.get_tool_schemas())
+            except Exception:
+                native_tool_count = 0
+
         return {
             "name": "mempalace",
             "enabled": self._config.enabled,
@@ -682,6 +710,7 @@ class MemPalaceMemoryProvider(_MemoryProvider):
             "session_id": self._session_id,
             "prefetch_cache_size": len(self._prefetch_cache),
             "prefetch_cache_limit": self._config.prefetch_cache_size,
+            "native_tool_count": native_tool_count,
             "cache_stats": cache_stats,
             "retrieval_timeout_seconds": retrieval_stats,
             "background_threads": len(self._threads),
