@@ -90,7 +90,7 @@ See `CONFIG_SCHEMA.md` for the full schema. Safe defaults prioritize recall with
 The MemPalace memory plugin provides two integration surfaces:
 
 1. **MemoryProvider** (this plugin) — automated, lifecycle-integrated. The agent calls `prefetch()`, `sync_turn()`, `on_memory_write()` transparently via the Hermes MemoryManager.
-2. **MCP tools** — 29 explicit tools exposed by `mempalace mcp` for direct agent/tool use (search, drawers, KG, diary, graph, tunnels, etc.).
+2. **MCP tools** — 30 explicit tools exposed by `mempalace mcp` for direct agent/tool use (search, drawers, KG, diary, graph, tunnels, etc.).
 
 ### Parity Matrix
 
@@ -214,6 +214,14 @@ Operator gate (compile, pytest, Hermes status, MCP test, provider load): see [do
 ```bash
 ~/.hermes/plugins/mempalace/scripts/smoke.sh
 ```
+
+## Bundled Optional Skill
+
+This repo ships the maintainer skill used to audit and repair MemPalace↔Hermes API drift:
+
+- `optional-skills/mempalace-plugin-api-alignment/SKILL.md`
+
+The skill includes its compatibility notes under the adjacent `references/` directory so the workflow can travel with the repo instead of living only in a local Hermes profile.
 
 Quick manual checks:
 
