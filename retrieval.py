@@ -24,17 +24,21 @@ _PATH_PATTERNS = [
     # /absolute/path or C:\path — extract the full path token
     (re.compile(r"(?:^|[\s`\"'(<[])((?:/[a-zA-Z0-9_.\-]+)+|"
                r"[A-Za-z]:\\[a-zA-Z0-9_.\-]+(?:\\[a-zA-Z0-9_.\-]+)*)"), str.lower),
-    # ~/path
-    (re.compile(r"(?:^|[\s`\"'(<[])~\/[a-zA-Z0-9_.\-]+"), str.lower),
-    # relative path like foo/bar.py or ./utils.py
-    (re.compile(r"(?:^|[\s`\"'(<[])([a-zA-Z0-9_.\-]+\/[a-zA-Z0-9_.\-]+)"), str.lower),
+    # ~/path or ~user/path — full token (negative lookbehind avoids char-class issues)
+    (re.compile(r"(?:^|(?<![\w/]))~\/[a-zA-Z0-9_./\-]+", re.IGNORECASE), str.lower),
+    # ./foo or ../bar or foo/bar — full relative path
+    (re.compile(r"(?:^|[\s`\"'(<[])((?:\.\.?/)?[a-zA-Z0-9_.\-/]+)"), str.lower),
+    # bare filename with extension: Cargo.toml, retrieval.py, *.gguf, etc.
+    (re.compile(r"(?:^|[\s`\"'(<[],.=])((?:[a-zA-Z0-9_\-]+\.)(?:toml|py|yaml|yml|json|md|txt|rs|js|ts|go|sh|bash|zsh|nix|ini|cfg|conf|gguf|bin|exe|so|a|o|dll))", re.IGNORECASE), str.lower),
 ]
 # Single-token identifiers: function names, class names, config keys
 _IDENT_PATTERNS = [
     re.compile(r"(?:^|[\s`\"'(<[],.])[a-zA-Z_][a-zA-Z0-9_]{2,30}(?=[`\"'\s)<\].,]|$)"),
 ]
-# Port numbers
-_PORT_PATTERN = re.compile(r"(?:^|[\s`\"'(<[],.:])(\d{4,5})(?=[\s`\"'\s)<\].,:]|$)")
+# Port numbers — bare (8080) or with host prefix (localhost:8080, 127.0.0.1:8080)
+_PORT_PATTERN = re.compile(
+    r"(?:(?:localhost|127[.]0[.]0[.]1|0[.]0[.]0[.]0)[:.](\d{4,5})|(?:^|[^\w])(\d{4,5})(?=[\s`\"'\s)<\[\].,;:]|$))"
+)
 # Model slugs: provider/model-name (e.g. hathor_rp-v.01-l3-8b-i1)
 _MODEL_PATTERN = re.compile(r"\b([a-zA-Z0-9_\-]+\/[a-zA-Z0-9_\-]+)\b")
 # Config keys: dot.separated.keys or KEY_NAME
@@ -70,11 +74,15 @@ def _extract_query_tokens(query: str) -> Dict[str, Set[str]]:
         for m in pat.finditer(q):
             tok = m.group(0).lower()
             # Filter out common english stopwords that happen to be identifiers
-            if tok not in {"the", "and", "for", "with", "from", "this", "that", "have", "has"}:
+            if tok not in {"the", "and", "for", "with", "from", "this", "that",
+                           "have", "has"}:
                 tokens["identifier"].add(tok)
 
     for m in _PORT_PATTERN.finditer(q):
-        tokens["port"].add(m.group(1))
+        # Group 1 = host-prefix port (localhost:8080), group 2 = bare port
+        port = m.group(1) or m.group(2)
+        if port:
+            tokens["port"].add(port)
 
     for m in _MODEL_PATTERN.finditer(q):
         tokens["model"].add(m.group(1).lower())
@@ -93,13 +101,19 @@ def _token_in_content(token_type: str, tokens: Dict[str, Set[str]], content_lowe
 
     For paths, identifiers, ports, models, config: check if the normalized
     token string appears in content_lower.
+    For 'port' tokens: use word-boundary check to avoid "8080" matching inside "9090".
     For 'quoted': check if the exact quoted phrase appears.
     """
     group = tokens.get(token_type, set())
     if not group:
         return False
     for tok in group:
-        if tok in content_lower:
+        if token_type == "port":
+            # Use word boundaries for port numbers to avoid "8080" matching inside "9090"
+            import re as _re
+            if _re.search(r"(?:^|[^\d])" + _re.escape(tok) + r"(?:$|[^\d])", content_lower):
+                return True
+        elif tok in content_lower:
             return True
     return False
 
