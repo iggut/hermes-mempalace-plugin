@@ -14,46 +14,138 @@ logger = logging.getLogger(__name__)
 # ----------------------------------------------------------------
 # Lexical pattern definitions (exact-match boost targets)
 # ----------------------------------------------------------------
-_LEXICAL_PATTERNS = [
-    re.compile(r"[/\.\\]"),           # file path separators
-    re.compile(r"(?:^|[\s`\"'])(/[a-zA-Z0-9_./\-]+)"),  # /absolute/path
-    re.compile(r"^[\w]{3,30}$"),     # simple identifiers
-    re.compile(r"\d{3,}" ),           # long digit sequences (ports, etc.)
+# Patterns to extract specific token types from queries.
+# Each pattern returns a list of concrete token strings (normalized).
+# A hit is "strong" ONLY when at least one extracted query token
+# appears verbatim (not just same type) in the hit content.
+
+# Token extractors: (compiled_regex, normalizer_fn)
+_PATH_PATTERNS = [
+    # /absolute/path or C:\path — extract the full path token
+    (re.compile(r"(?:^|[\s`\"'(<[])((?:/[a-zA-Z0-9_.\-]+)+|"
+               r"[A-Za-z]:\\[a-zA-Z0-9_.\-]+(?:\\[a-zA-Z0-9_.\-]+)*)"), str.lower),
+    # ~/path
+    (re.compile(r"(?:^|[\s`\"'(<[])~\/[a-zA-Z0-9_.\-]+"), str.lower),
+    # relative path like foo/bar.py or ./utils.py
+    (re.compile(r"(?:^|[\s`\"'(<[])([a-zA-Z0-9_.\-]+\/[a-zA-Z0-9_.\-]+)"), str.lower),
 ]
+# Single-token identifiers: function names, class names, config keys
+_IDENT_PATTERNS = [
+    re.compile(r"(?:^|[\s`\"'(<[],.])[a-zA-Z_][a-zA-Z0-9_]{2,30}(?=[`\"'\s)<\].,]|$)"),
+]
+# Port numbers
+_PORT_PATTERN = re.compile(r"(?:^|[\s`\"'(<[],.:])(\d{4,5})(?=[\s`\"'\s)<\].,:]|$)")
+# Model slugs: provider/model-name (e.g. hathor_rp-v.01-l3-8b-i1)
+_MODEL_PATTERN = re.compile(r"\b([a-zA-Z0-9_\-]+\/[a-zA-Z0-9_\-]+)\b")
+# Config keys: dot.separated.keys or KEY_NAME
+_CONFIG_PATTERN = re.compile(r"\b([a-zA-Z_][a-zA-Z0-9_]{1,30}(?:\.[a-zA-Z_][a-zA-Z0-9_]+){0,3})\b")
+# Error substrings in double-quoted strings from the query
+_QUOTED_PATTERN = re.compile(r"\"([^\"]{3,80})\"")
 
-# Evidence strength thresholds
-_STRONG_THRESHOLD = 0.75
-_MEDIUM_THRESHOLD = 0.50
+
+def _extract_query_tokens(query: str) -> Dict[str, Set[str]]:
+    """Extract concrete lexical tokens from the query, grouped by type.
+
+    Returns a dict of token_type -> set of normalized token strings.
+    Each token type is tracked separately so we can check the SAME token
+    appears in content, not just any token of the same type.
+    """
+    q = query
+    tokens: Dict[str, Set[str]] = {
+        "path": set(),
+        "identifier": set(),
+        "port": set(),
+        "model": set(),
+        "config": set(),
+        "quoted": set(),
+    }
+
+    for pat, norm in _PATH_PATTERNS:
+        for m in pat.finditer(q):
+            tok = norm(m.group(1)) if m.lastindex else norm(m.group(0))
+            if len(tok) > 1:
+                tokens["path"].add(tok)
+
+    for pat in _IDENT_PATTERNS:
+        for m in pat.finditer(q):
+            tok = m.group(0).lower()
+            # Filter out common english stopwords that happen to be identifiers
+            if tok not in {"the", "and", "for", "with", "from", "this", "that", "have", "has"}:
+                tokens["identifier"].add(tok)
+
+    for m in _PORT_PATTERN.finditer(q):
+        tokens["port"].add(m.group(1))
+
+    for m in _MODEL_PATTERN.finditer(q):
+        tokens["model"].add(m.group(1).lower())
+
+    for m in _CONFIG_PATTERN.finditer(q):
+        tokens["config"].add(m.group(1).lower())
+
+    for m in _QUOTED_PATTERN.finditer(q):
+        tokens["quoted"].add(m.group(1).lower())
+
+    return tokens
 
 
-def _score_is_strong(score: float) -> bool:
-    return score >= _STRONG_THRESHOLD
+def _token_in_content(token_type: str, tokens: Dict[str, Set[str]], content_lower: str) -> bool:
+    """Check if any extracted token of the given type appears in content.
 
-
-def _score_is_medium(score: float) -> bool:
-    return score >= _MEDIUM_THRESHOLD
+    For paths, identifiers, ports, models, config: check if the normalized
+    token string appears in content_lower.
+    For 'quoted': check if the exact quoted phrase appears.
+    """
+    group = tokens.get(token_type, set())
+    if not group:
+        return False
+    for tok in group:
+        if tok in content_lower:
+            return True
+    return False
 
 
 def _classify_evidence(query: str, hit: Dict[str, Any]) -> str:
-    """Classify a hit as strong/medium/weak based on lexical + score."""
-    content = (hit.get("content") or "").lower()
+    """Classify a hit as strong/medium/weak based on lexical + score.
+
+    A hit is STRONG only when:
+      1. The full normalized query is an exact substring of the content, OR
+      2. At least one extracted query token (same string, not just same type)
+         appears in the content.
+
+    A hit is MEDIUM when score >= _MEDIUM_THRESHOLD but no token match.
+    A hit is WEAK otherwise.
+    """
+    content_lower = (hit.get("content") or "").lower()
     q = query.lower()
 
-    # Exact substring in content
-    if q in content:
+    # Exact query substring match
+    if q in content_lower:
         return "strong"
 
-    # Check lexical patterns
-    for pat in _LEXICAL_PATTERNS:
-        if pat.search(query) and pat.search(content):
+    # Extract concrete tokens from query
+    qt = _extract_query_tokens(query)
+
+    # Strong: SAME extracted token (not just same type) appears in content
+    # Check each token group — at least one token must appear verbatim
+    for ttype in ("path", "identifier", "port", "model", "config", "quoted"):
+        if _token_in_content(ttype, qt, content_lower):
             return "strong"
 
     score = hit.get("score", 0)
-    if _score_is_strong(score):
+    if score >= 0.75:
         return "strong"
-    if _score_is_medium(score):
+    if score >= 0.50:
         return "medium"
     return "weak"
+
+
+# Exported for test use
+def _score_is_strong(score: float) -> bool:
+    return score >= 0.75
+
+
+def _score_is_medium(score: float) -> bool:
+    return score >= 0.50
 
 
 # ----------------------------------------------------------------
@@ -359,9 +451,15 @@ class MemPalaceRetrieval:
         l2_hits = self._run_l2_scoped_recall(query, session_id, key_wing, key_room)
         all_hits.extend(l2_hits)
 
-        # L3: full hybrid search fallback
-        l3_hits = self._run_l3_hybrid_search(query, key_wing, key_room)
-        all_hits.extend(l3_hits)
+        # L3: full hybrid search — ONLY if L2 found nothing strong/medium
+        # and always_run_l3 is False (default). This saves latency + tokens.
+        l2_has_signal = any(
+            _classify_evidence(query, h) in ("strong", "medium")
+            for h in l2_hits
+        )
+        if not l2_has_signal or self._config.always_run_l3:
+            l3_hits = self._run_l3_hybrid_search(query, key_wing, key_room)
+            all_hits.extend(l3_hits)
 
         # Deduplicate by drawer_id
         seen_ids: Set[str] = set()
@@ -390,26 +488,40 @@ class MemPalaceRetrieval:
     # ----------------------------------------------------------------
 
     def _run_l0_wake_block(self) -> str:
-        """Get the minimal memory stack wake block if available."""
+        """Get the minimal memory stack wake block if available.
+
+        Uses wake_up_context(wing, char_budget) — the correct API method.
+        Falls back to the older 'wake_up' attribute name if present (compat).
+        """
         try:
+            # Primary: wake_up_context(wing, char_budget) — the real API
+            ctx_fn = getattr(self._api, "wake_up_context", None)
+            if callable(ctx_fn):
+                cap = self._config.max_wake_block_chars
+                wing = self._config.wake_up_wing or self._config.target_wing or ""
+                result = _run_with_timeout(
+                    lambda: ctx_fn(wing=wing, char_budget=cap),
+                    timeout_seconds=1.0,
+                )
+                if result and isinstance(result, str):
+                    if result:
+                        self._diag["l0_wake_hits"] += 1
+                    return result[:cap] if len(result) > cap else result
+                return ""
+            # Fallback: older 'wake_up' attribute (no-arg, if ever exposed)
             wake_fn = getattr(self._api, "wake_up", None)
-            if not callable(wake_fn):
-                return ""
-            result = _run_with_timeout(wake_fn, timeout_seconds=1.0)
-            if not result:
-                return ""
-            if isinstance(result, str):
-                text = result
-            elif isinstance(result, dict):
-                text = result.get("content", result.get("text", ""))
-            else:
-                text = str(result)
-            cap = self._config.max_wake_block_chars
-            if len(text) > cap:
-                text = text[:cap]
-            if text:
-                self._diag["l0_wake_hits"] += 1
-            return text
+            if callable(wake_fn):
+                result = _run_with_timeout(wake_fn, timeout_seconds=1.0)
+                if not result:
+                    return ""
+                text = result if isinstance(result, str) else str(result)
+                cap = self._config.max_wake_block_chars
+                if len(text) > cap:
+                    text = text[:cap]
+                if text:
+                    self._diag["l0_wake_hits"] += 1
+                return text
+            return ""
         except Exception as e:
             logger.debug("[MemPalaceRetrieval] L0 wake_up failed: %s", e)
             return ""
@@ -470,6 +582,13 @@ class MemPalaceRetrieval:
         use_wing = wing or self._config.wake_up_wing or ""
         use_room = room or self._config.l2_default_room or ""
 
+        # L2.5: exact-match step — run BEFORE semantic search when query
+        # contains concrete lexical tokens (paths, identifiers, ports).
+        # Uses the same search() but with a token-derived exact query to
+        # bias toward lexical matches. This runs even without a known wing.
+        exact_hits = self._run_l2_exact_match(query, use_wing, use_room)
+        hits.extend(exact_hits)
+
         # KG lookup if enabled (use_kg is the new flag; include_kg_facts is the legacy flag)
         if self._config.use_kg or self._config.include_kg_facts:
             kg_hits = self._run_kg_lookup(query)
@@ -480,7 +599,7 @@ class MemPalaceRetrieval:
             tunnel_hits = self._run_tunnel_follow(use_wing, use_room)
             hits.extend(tunnel_hits)
 
-        # Scoped semantic search
+        # Scoped semantic search (if wing is known)
         if use_wing:
             scoped_hits = self._search(
                 query,
@@ -492,6 +611,48 @@ class MemPalaceRetrieval:
             hits.extend(scoped_hits)
 
         return hits
+
+    def _run_l2_exact_match(
+        self, query: str, wing: str, room: str
+    ) -> List[Dict[str, Any]]:
+        """L2.5 — exact-match step for concrete lexical tokens.
+
+        Detects paths, identifiers, ports, and other specific tokens in the query.
+        Runs a targeted search using the most specific token available, with a very
+        short timeout and strict result cap. This biases toward exact hits before
+        the broader semantic L2 search.
+
+        Falls back gracefully if no specific tokens are found or if the search
+        API is unavailable.
+        """
+        tokens = _extract_query_tokens(query)
+
+        # Build an exact-match query from the most specific token available
+        exact_query: Optional[str] = None
+        if tokens.get("path"):
+            # Use the shortest path token (most specific) — prefer absolute paths
+            paths = sorted(tokens["path"], key=len, reverse=True)
+            exact_query = paths[0]
+        elif tokens.get("identifier"):
+            idents = sorted(tokens["identifier"], key=len, reverse=True)
+            exact_query = idents[0]
+        elif tokens.get("port"):
+            exact_query = tokens["port"].copy().pop() if tokens["port"] else None
+
+        if not exact_query:
+            return []
+
+        try:
+            return self._search(
+                exact_query,
+                wing=wing or None,
+                room=room or None,
+                limit=2,  # very tight cap for exact step
+                timeout_ms=min(self._config.max_l3_search_time_ms, 150),
+            )
+        except Exception:
+            # Fail open — missing exact match is not fatal
+            return []
 
     def _run_kg_lookup(self, query: str) -> List[Dict[str, Any]]:
         """Extract entity hints from query and query KG for facts."""

@@ -43,6 +43,7 @@ class FakeConfig:
         self.use_halls = False
         self.use_closets = False
         self.prefer_active_project = True
+        self.always_run_l3 = False
         # Memory stack
         self.memory_stack_enabled = False
         self.wake_up_wing = ""
@@ -304,25 +305,40 @@ class TestSessionScopedCache:
 # ----------------------------------------------------------------
 
 class TestL0WakeBlock:
-    def test_l0_called_when_api_has_wake_up(self):
-        cfg = FakeConfig(max_wake_block_chars=200)
+    def test_l0_called_when_api_has_wake_up_context(self):
+        """L0 calls wake_up_context(wing, char_budget) — the correct API."""
+        cfg = FakeConfig(max_wake_block_chars=200, target_wing="testwing")
         api = MagicMock()
         api.search.return_value = []
-        # Mock the method name retrieval.py looks for: "wake_up"
-        api.wake_up = MagicMock(return_value="wake content here")
+        api.wake_up_context = MagicMock(return_value="wake content here")
         r = make_retrieval(api, cfg)
         result = r.prefetch("query", "sess_l0", background=False)
         assert "wake content here" in result
+        # Verify wake_up_context was called with wing and char_budget
+        api.wake_up_context.assert_called_once()
+        call_kwargs = api.wake_up_context.call_args.kwargs
+        assert "wing" in call_kwargs
+        assert "char_budget" in call_kwargs
 
     def test_l0_text_truncated_to_max_wake_block_chars(self):
         cfg = FakeConfig(max_wake_block_chars=50)
         api = MagicMock()
         api.search.return_value = []
-        api.wake_up = MagicMock(return_value="x" * 200)
+        api.wake_up_context = MagicMock(return_value="x" * 200)
         r = make_retrieval(api, cfg)
         result = r.prefetch("query", "sess_l0b")
         # Wake block should be capped
         assert len(result) <= cfg.max_wake_block_chars + 50  # header allowance
+
+    def test_l0_falls_back_to_wake_up_attribute(self):
+        """L0 falls back to older 'wake_up' attr if wake_up_context is absent."""
+        cfg = FakeConfig(max_wake_block_chars=200)
+        api = MagicMock(spec=["search", "wake_up"])
+        api.search.return_value = []
+        api.wake_up = MagicMock(return_value="fallback wake content")
+        r = make_retrieval(api, cfg)
+        result = r.prefetch("query", "sess_l0c", background=False)
+        assert "fallback wake content" in result
 
 
 # ----------------------------------------------------------------

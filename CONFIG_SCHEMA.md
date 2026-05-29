@@ -53,9 +53,29 @@ mempalace_memory:
     bm25_weight: 0.4
     max_results: 8
     min_score: 0.3
-    include_kg_facts: true
+    include_kg_facts: true    # Legacy KG flag (use `use_kg` for new flag)
     kg_entity_limit: 5
     timeout_ms: 500
+
+    # Staged recall (L0→L1→L2→L3 pipeline)
+    use_kg: true              # Enable KG lookup in L2 (new flag; include_kg_facts also works)
+    use_halls: false          # Hall routing — no-op (MemPalace MCP does not expose halls)
+    use_closets: false        # Closet-aware routing — no-op (not wired yet)
+    prefer_active_project: true
+    follow_tunnels: false     # Cross-wing tunnel follow; safe with low caps below
+    max_tunnel_hops: 1
+    max_tunnel_hits: 2
+    always_run_l3: false       # If false (default), L3 only runs when L2 finds nothing
+
+    # Token/char budgets for recall injection
+    max_wake_block_chars: 600      # L0 cap (chars); clamped 100..5000
+    max_recall_chars: 1800          # Total recall block cap; clamped 200..8000
+    max_quote_chars_per_hit: 280   # Per-hit content cap; clamped 50..2000
+    max_total_quoted_chars: 1400   # Aggregate quoted chars cap; clamped 100..5000
+    max_l3_search_time_ms: 400     # L3 timeout; clamped 50..2000
+
+    # Duplicate guard
+    avoid_duplicate_session_imports: true  # Skip delegation writes when mode=session_end
 
   holographic:
     enabled: false

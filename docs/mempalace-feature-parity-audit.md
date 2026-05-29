@@ -1,43 +1,35 @@
-# MemPalace Feature Parity Audit — 2026-05-28
+# MemPalace Feature Parity Audit — 2026-05-28 (post Phase 4 review)
 
 ## MemPalace 3.3.6 Feature Matrix
 
 | Feature | Plugin Status | Notes |
 |---|---|---|
-| Semantic search | Used | `_api.search()` called in `_fetch_with_timeout` |
-| BM25/lexical fallback | Unused | `_lexical_fallback` exists in api.py but not called by retrieval |
+| Semantic search | Used | `_api.search()` called in L2 and L3 stages |
+| BM25/lexical fallback | Used | `_lexical_fallback` in `api.search()` — called automatically when semantic results < limit |
 | Closets / AAAK | Unused | `get_aaak_spec()`, `get_closet()` in api.py; not wired into retrieval |
-| Drawer grep / best chunk | Unused | `drawer_grep()` in api.py; not called |
-| Halls / content-type routing | Unused | Not exposed in MemPalace MCP tools |
+| Drawer grep / best chunk | Unused | No `drawer_grep()` method in api.py; `list_drawers()` exists but unused |
+| Halls / content-type routing | No-op | Not exposed in MemPalace MCP tools; `use_halls` is a config-only flag |
 | Wings / rooms / drawers | Partial | Used in search wing/room params; not used as routing hints for L2 |
-| Temporal KG | Partial | `include_kg_facts` triggers `_append_kg_facts` (old method); new `_run_kg_lookup` respects `valid_to` |
+| Temporal KG | Partial | `_run_kg_lookup` respects `valid_to`; `include_kg_facts` legacy flag still works |
 | Diary / agent diary | Unused | `diary_write/diary_read` exist in api.py; not called from retrieval |
-| Cross-wing tunnels | Unused | `follow_tunnels()` in api.py; wired in new `_run_tunnel_follow` but disabled by default |
-| Wake-up / memory stack | Partial | `wake_up_context()` exists in api.py; L0/L1 staged pipeline now implemented |
+| Cross-wing tunnels | Wired (disabled) | `_run_tunnel_follow` with config caps; `follow_tunnels: false` default |
+| Wake-up / memory stack | Fixed | L0 now correctly calls `wake_up_context(wing, char_budget)` instead of missing `wake_up()` |
 | MCP tool availability | Reachable | 30 tools via stdio |
-| Background/session import | Partial | `avoid_duplicate_session_imports` flag set in config; ingestion checks it |
+| Background/session import | Partial | `avoid_duplicate_session_imports` now wired in `on_delegation()` |
 | Export/status/repair | Partial | `mempalace status` works; repair not wired |
 | Duplicate detection | Used | `duplicate_check_enabled` in config; `check_duplicate` called in add drawer |
 
-## Plugin-Local Improvement Opportunities
+## Phase 4 Review Fixes Applied
 
-| Opportunity | Status | Notes |
-|---|---|---|
-| L0/L1/L2/L3 staged pipeline | Done | New `_run_l0_wake_block`, `_run_l1_mstack`, `_run_l2_scoped_recall`, `_run_l3_hybrid_search` |
-| Per-hit quote cap | Done | `max_quote_chars_per_hit` (default 280) |
-| Total recall chars cap | Done | `max_recall_chars` (default 1800) |
-| Evidence strength labels | Done | `[strong]/[medium]/[weak]` via `_classify_evidence()` |
-| Duplicate collapse by drawer_id | Done | In `_fetch_with_timeout` before formatting |
-| Lexical exact match boost | Done | Regex patterns for file paths, identifiers, ports in `_classify_evidence` |
-| KG expired fact demotion | Done | `valid_to` check in `_run_kg_lookup` |
-| Tunnel following | Done | `_run_tunnel_follow` with config caps (disabled by default) |
-| Session-scoped cache | Done | Cache key includes session_id |
-| Fail-open on import/timeout | Done | `_run_with_timeout` returns default on timeout |
-| Diagnostic metrics | Done | `staged_pipeline` section in `diagnostics()` |
-| KG header backward compat | Done | `--- Knowledge Graph ---` inserted before first KG hit |
-| Backward compat `_fetch_with_timeout` signature | Done | `**kwargs` accepts `timeout=` keyword from old callers |
+| Issue | Fix |
+|---|---|
+| L0 called wrong method `wake_up()` | Now calls `wake_up_context(wing, char_budget)` — the real API; falls back to `wake_up` attr if absent |
+| Lexical patterns too broad | Replaced with `_extract_query_tokens()` — extracts CONCRETE tokens (path strings, identifiers, ports, model slugs, config keys, quoted substrings); hit is strong ONLY when SAME extracted token appears in content |
+| L3 always runs unconditionally | L3 now runs ONLY when L2 finds zero strong/medium hits; `always_run_l3: false` default |
+| Duplicate guard flag unwired | `on_delegation()` now skips writes when `ingestion_mode=session_end` and `avoid_duplicate_session_imports=True` |
+| No L2.5 exact-match step | Added `_run_l2_exact_match()` — extracts specific tokens from query, runs targeted search with tight 150ms timeout and 2-result cap |
 
-## Config Fields Added (Phase 3)
+## Config Fields Added (Phase 3 + Phase 4 review)
 
 - `max_wake_block_chars` — L0 cap (default 600, range [100, 5000])
 - `max_recall_chars` — total recall block cap (default 1800, range [200, 8000])
@@ -49,14 +41,33 @@
 - `max_tunnel_hits` — max tunnel hits returned (default 2, range [1, 10])
 - `prefer_active_project` — prefer wing/room scoping for active project (default True)
 - `use_kg` — enable KG lookup in L2 (default False; `include_kg_facts` still works for legacy)
-- `use_halls` — enable hall routing hint (not yet exposed in MemPalace MCP)
-- `use_closets` — enable closet-aware routing (not yet wired)
+- `use_halls` — enable hall routing hint (not yet exposed in MemPalace MCP — no-op)
+- `use_closets` — enable closet-aware routing (not yet wired — no-op)
 - `avoid_duplicate_session_imports` — guard against double ingestion (default True)
+- `always_run_l3` — force L3 to run even when L2 finds signal (default False)
 
-## Not Yet Implemented
+## No-op / Unavailable Features
 
-- Hall/content-type routing — MemPalace MCP does not expose hall filter tools
-- Closet/AAAK-aware search — `get_closet()` exists in api.py but not called from retrieval
-- Drawer grep for exact chunk finding — `drawer_grep()` unused
-- Diary-based context injection — diary read not wired into L0/L1
-- Session importer mode in provider — `avoid_duplicate_session_imports` flag exists but flag wiring incomplete
+These features are documented as config options but are currently non-functional:
+
+| Feature | Reason |
+|---|---|
+| `use_halls` | MemPalace MCP does not expose hall filter tools |
+| `use_closets` | `get_closet()` exists in api.py but retrieval.py does not call it |
+| Drawer grep | No `drawer_grep()` in api.py; `list_drawers()` exists but is not used for retrieval routing |
+| Diary in L0/L1 | Diary read not wired into retrieval pipeline |
+| Session importer mode | Flag exists but session-end importer integration is incomplete |
+
+## Retrieval Pipeline (post Phase 4 review)
+
+```
+L0: wake_up_context(wing, char_budget=max_wake_block_chars)  — always attempted
+L1: scoped_recall(wing, room, char_budget=recall_char_budget)  — if memory_stack_enabled
+L2:
+  L2.5: _run_l2_exact_match() — token-extracted exact query, 150ms, 2 results max
+  KG:   _run_kg_lookup() — if use_kg or include_kg_facts
+  Tunnels: _run_tunnel_follow() — if follow_tunnels
+  Semantic: _search(wing, room) — if wing known
+L3: _run_l3_hybrid_search() — ONLY if L2 found zero strong+medium hits AND always_run_l3=false
+Format: _format_recall_block() — char caps, per-hit caps, total quoted chars cap, [strong]/[medium] labels
+```

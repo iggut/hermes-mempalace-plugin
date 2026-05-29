@@ -171,7 +171,8 @@ class MemPalaceConfig:
     use_kg: bool = False
     use_halls: bool = False
     use_closets: bool = False
-    # L3: full search fallback
+    # L3: full search fallback (only runs when L2 finds nothing strong/medium)
+    always_run_l3: bool = False
     max_l3_search_time_ms: int = 400
     # Token budget for recall injection
     max_recall_chars: int = 1800
@@ -328,6 +329,7 @@ def _apply_plugin_sections(cfg: MemPalaceConfig, plugin_config: Dict[str, Any]) 
     _apply_if_present(cfg, retr, "follow_tunnels", None, bool)
     _apply_if_present(cfg, retr, "max_tunnel_hops")
     _apply_if_present(cfg, retr, "max_tunnel_hits")
+    _apply_if_present(cfg, retr, "always_run_l3", None, bool)
 
     perf = g("performance")
     _apply_if_present(cfg, perf, "background_ingest")

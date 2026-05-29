@@ -518,10 +518,23 @@ class MemPalaceMemoryProvider(_MemoryProvider):
     def on_delegation(
         self, task: str, result: str, *, child_session_id: str = "", **kwargs
     ) -> None:
-        """Ingest subagent delegation results into MemPalace."""
+        """Ingest subagent delegation results into MemPalace.
+
+        When ingestion.mode=session_end and avoid_duplicate_session_imports=True,
+        skip direct ingestion here — the delegation content will be captured
+        by the session-end summary writer instead, preventing double-write.
+        """
         if not self._config.enabled:
             return
         if self._config.ingestion_mode == "none":
+            return
+        # Duplicate guard: if session-end importer is active, skip delegation-level
+        # writes to avoid the same result being written twice (once here, once at
+        # session end via the session summary).
+        if (
+            self._config.avoid_duplicate_session_imports
+            and self._config.ingestion_mode == "session_end"
+        ):
             return
 
         self._ensure_api()
