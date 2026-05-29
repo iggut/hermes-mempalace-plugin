@@ -163,6 +163,27 @@ class MemPalaceConfig:
     recall_char_budget: int = 1500
     recall_n_results: int = 10
 
+    # Staged recall (Phase 3 — L0/L1/L2/L3 pipeline)
+    # L0: tiny wake context from memory stack
+    max_wake_block_chars: int = 600
+    # L2: targeted scoped recall
+    prefer_active_project: bool = True
+    use_kg: bool = False
+    use_halls: bool = False
+    use_closets: bool = False
+    # L3: full search fallback
+    max_l3_search_time_ms: int = 400
+    # Token budget for recall injection
+    max_recall_chars: int = 1800
+    max_quote_chars_per_hit: int = 280
+    max_total_quoted_chars: int = 1400
+    # Cross-wing tunnels
+    follow_tunnels: bool = False
+    max_tunnel_hops: int = 1
+    max_tunnel_hits: int = 2
+    # Duplicate guard for session importer
+    avoid_duplicate_session_imports: bool = True
+
     @property
     def retrieval_timeout_seconds(self) -> float:
         """Bounded retrieval timeout in seconds (derived from retrieval_timeout_ms)."""
@@ -203,6 +224,14 @@ def _finalize_config(cfg: MemPalaceConfig) -> MemPalaceConfig:
     cfg.graph_traverse_limit = _clamp(cfg.graph_traverse_limit, 1, 50, 10)
     cfg.diary_last_n = _clamp(cfg.diary_last_n, 1, 100, 5)
     cfg.cache_ttl_seconds = _clamp(cfg.cache_ttl_seconds, 1, 300, 30)
+
+    cfg.max_wake_block_chars = _clamp(cfg.max_wake_block_chars, 100, 5000, 600)
+    cfg.max_recall_chars = _clamp(cfg.max_recall_chars, 200, 8000, 1800)
+    cfg.max_quote_chars_per_hit = _clamp(cfg.max_quote_chars_per_hit, 50, 2000, 280)
+    cfg.max_total_quoted_chars = _clamp(cfg.max_total_quoted_chars, 100, 5000, 1400)
+    cfg.max_l3_search_time_ms = _clamp(cfg.max_l3_search_time_ms, 50, 2000, 400)
+    cfg.max_tunnel_hops = _clamp(cfg.max_tunnel_hops, 1, 5, 1)
+    cfg.max_tunnel_hits = _clamp(cfg.max_tunnel_hits, 1, 10, 2)
 
     cfg.min_score = _clamp_float(cfg.min_score, 0.0, 1.0, 0.3)
     cfg.vector_weight = _clamp_float(cfg.vector_weight, 0.0, 1.0, 0.6)
@@ -288,6 +317,17 @@ def _apply_plugin_sections(cfg: MemPalaceConfig, plugin_config: Dict[str, Any]) 
     _apply_if_present(cfg, retr, "include_kg_facts", None, bool)
     _apply_if_present(cfg, retr, "kg_entity_limit")
     _apply_if_present(cfg, retr, "timeout_ms", "retrieval_timeout_ms")
+    _apply_if_present(cfg, retr, "max_recall_chars")
+    _apply_if_present(cfg, retr, "max_quote_chars_per_hit")
+    _apply_if_present(cfg, retr, "max_total_quoted_chars")
+    _apply_if_present(cfg, retr, "max_l3_search_time_ms")
+    _apply_if_present(cfg, retr, "prefer_active_project", None, bool)
+    _apply_if_present(cfg, retr, "use_kg", None, bool)
+    _apply_if_present(cfg, retr, "use_halls", None, bool)
+    _apply_if_present(cfg, retr, "use_closets", None, bool)
+    _apply_if_present(cfg, retr, "follow_tunnels", None, bool)
+    _apply_if_present(cfg, retr, "max_tunnel_hops")
+    _apply_if_present(cfg, retr, "max_tunnel_hits")
 
     perf = g("performance")
     _apply_if_present(cfg, perf, "background_ingest")
@@ -335,6 +375,15 @@ def _apply_plugin_sections(cfg: MemPalaceConfig, plugin_config: Dict[str, Any]) 
     _apply_if_present(cfg, mstack, "wake_char_budget")
     _apply_if_present(cfg, mstack, "recall_char_budget")
     _apply_if_present(cfg, mstack, "recall_n_results")
+    _apply_if_present(cfg, mstack, "max_wake_block_chars")
+    _apply_if_present(cfg, mstack, "prefer_active_project", None, bool)
+    _apply_if_present(cfg, mstack, "use_kg", None, bool)
+    _apply_if_present(cfg, mstack, "use_halls", None, bool)
+    _apply_if_present(cfg, mstack, "use_closets", None, bool)
+    _apply_if_present(cfg, mstack, "follow_tunnels", None, bool)
+    _apply_if_present(cfg, mstack, "max_tunnel_hops")
+    _apply_if_present(cfg, mstack, "max_tunnel_hits")
+    _apply_if_present(cfg, mstack, "avoid_duplicate_session_imports", None, bool)
 
     graph = g("graph")
     _apply_if_present(cfg, graph, "enabled", "graph_enabled", bool)
@@ -371,6 +420,12 @@ def _apply_plugin_sections(cfg: MemPalaceConfig, plugin_config: Dict[str, Any]) 
         "max_fanout", "prefetch_cache_size", "lexical_scan_limit", "thread_join_timeout_ms",
         "wake_up_wing", "l2_default_room", "identity_path",
         "wake_char_budget", "recall_char_budget", "recall_n_results",
+        "max_wake_block_chars", "prefer_active_project",
+        "use_kg", "use_halls", "use_closets",
+        "max_l3_search_time_ms", "max_recall_chars",
+        "max_quote_chars_per_hit", "max_total_quoted_chars",
+        "follow_tunnels", "max_tunnel_hops", "max_tunnel_hits",
+        "avoid_duplicate_session_imports",
         "graph_traverse_max_hops", "graph_traverse_limit",
         "duplicate_check_enabled", "duplicate_threshold",
         "cache_ttl_seconds",
