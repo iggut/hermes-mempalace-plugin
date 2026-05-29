@@ -132,8 +132,8 @@ def _classify_evidence(query: str, hit: Dict[str, Any]) -> str:
     content_lower = (hit.get("content") or "").lower()
     q = query.lower()
 
-    # Exact query substring match
-    if q in content_lower:
+    # Exact query substring match (skip empty query to avoid "" matching everything)
+    if q and q in content_lower:
         return "strong"
 
     # Extract concrete tokens from query
