@@ -19,32 +19,82 @@ logger = logging.getLogger(__name__)
 # A hit is "strong" ONLY when at least one extracted query token
 # appears verbatim (not just same type) in the hit content.
 
-# Token extractors: (compiled_regex, normalizer_fn)
-_PATH_PATTERNS = [
-    # /absolute/path or C:\path — extract the full path token
-    (re.compile(r"(?:^|[\s`\"'(<[])((?:/[a-zA-Z0-9_.\-]+)+|"
-               r"[A-Za-z]:\\[a-zA-Z0-9_.\-]+(?:\\[a-zA-Z0-9_.\-]+)*)"), str.lower),
-    # ~/path or ~user/path — full token (negative lookbehind avoids char-class issues)
-    (re.compile(r"(?:^|(?<![\w/]))~\/[a-zA-Z0-9_./\-]+", re.IGNORECASE), str.lower),
-    # ./foo or ../bar or foo/bar — full relative path
-    (re.compile(r"(?:^|[\s`\"'(<[])((?:\.\.?/)?[a-zA-Z0-9_.\-/]+)"), str.lower),
-    # bare filename with extension: Cargo.toml, retrieval.py, *.gguf, etc.
-    (re.compile(r"(?:^|[\s`\"'(<[],.=])((?:[a-zA-Z0-9_\-]+\.)(?:toml|py|yaml|yml|json|md|txt|rs|js|ts|go|sh|bash|zsh|nix|ini|cfg|conf|gguf|bin|exe|so|a|o|dll))", re.IGNORECASE), str.lower),
-]
-# Single-token identifiers: function names, class names, config keys
-_IDENT_PATTERNS = [
-    re.compile(r"(?:^|[\s`\"'(<[],.])[a-zA-Z_][a-zA-Z0-9_]{2,30}(?=[`\"'\s)<\].,]|$)"),
-]
+# Path patterns: require at least one path separator (/) or drive letter (\)
+# to avoid matching single generic words that happen to appear in queries.
+_PATH_ABS_RE = re.compile(
+    r"(?:^|[\s`\"'(<[])((?:/[a-zA-Z0-9_.\-]+)+|"
+    r"[A-Za-z]:\\[a-zA-Z0-9_.\-]+(?:\\[a-zA-Z0-9_.\-]+)*)"
+)
+# Tilde paths: require ~/
+_PATH_TILDE_RE = re.compile(r"(?:^|(?<![\w/]))~/[a-zA-Z0-9_./-]+", re.IGNORECASE)
+# Relative paths: require ./ or ../ prefix, OR embedded / separator in a path-like token
+_PATH_REL_RE = re.compile(r"(?:^|[\s`\"'(<[])((?:\.\.?/)?[a-zA-Z0-9_.\-/]+)")
+# Bare filenames: must contain a dot + extension, and either
+# (a) preceded by path separator or space, OR (b) followed by separator/space/end
+# This prevents matching single words like "port" just because they appear near a dot
+_BARE_FNAME_RE = re.compile(r'\b([a-zA-Z0-9_\-]+\.[a-zA-Z]{2,10})\b')
+
+# Generic identifiers: words that should NOT contribute to strong classification
+# when high-specificity tokens (path/port/model/config/quoted) are also present.
+_IDENTIFIER_STOPWORDS = frozenset({
+    # Common English words that appear in code queries
+    "the", "and", "for", "with", "from", "this", "that",
+    "are", "was", "were", "been", "being",
+    "have", "has", "had", "do", "does", "did", "will", "would",
+    "could", "should", "may", "might", "must",
+    "into", "over", "under", "about", "out", "up", "down",
+    # Common English verbs/adjectives that appear in code queries
+    "is", "am", "be", "being", "been",
+    "fail", "failing", "fails", "failed", "failure",
+    "work", "working", "works", "worked",
+    "run", "running", "runs", "ran",
+    "set", "setting", "sets", "setup",
+    "get", "getting", "gets", "got",
+    "make", "making", "makes", "made",
+    "use", "using", "uses", "used",
+    "see", "seeing", "seen", "saw",
+    "know", "knowing", "known", "knew",
+    "want", "wanting", "wanted",
+    "need", "needing", "needed",
+    "change", "changing", "changed", "changes",
+    "update", "updating", "updated", "updates",
+    "add", "adding", "added", "adds",
+    "remove", "removing", "removed", "removes",
+    "check", "checking", "checked", "checks",
+    "test", "testing", "tested", "tests",
+    "start", "starting", "started", "starts",
+    "stop", "stopping", "stopped", "stops",
+    "open", "opening", "opened", "opens",
+    "close", "closing", "closed", "closes",
+    "read", "reading", "reads",
+    "write", "writing", "writes", "wrote",
+    # Generic technical terms that should NOT drive strong classification
+    "port", "host", "path", "file", "name", "value", "key",
+    "data", "text", "line", "code", "class", "func", "method",
+    "config", "server", "client", "app", "service",
+    "error", "err", "warning",
+    "invalid", "wrong", "bad", "good", "ok",
+    "type", "kind", "sort",
+})
+
+# Single-token identifiers: function names, class names, variable names
+# Strict length requirement to avoid matching generic english words.
+_IDENT_RE = re.compile(r"(?:^|[\s`\"'(<[],.])[a-zA-Z_][a-zA-Z0-9_]{3,30}(?=[`\"'\s)<\[].,]|$)")
 # Port numbers — bare (8080) or with host prefix (localhost:8080, 127.0.0.1:8080)
-_PORT_PATTERN = re.compile(
+_PORT_RE = re.compile(
     r"(?:(?:localhost|127[.]0[.]0[.]1|0[.]0[.]0[.]0)[:.](\d{4,5})|(?:^|[^\w])(\d{4,5})(?=[\s`\"'\s)<\[\].,;:]|$))"
 )
 # Model slugs: provider/model-name (e.g. hathor_rp-v.01-l3-8b-i1)
-_MODEL_PATTERN = re.compile(r"\b([a-zA-Z0-9_\-]+\/[a-zA-Z0-9_\-]+)\b")
-# Config keys: dot.separated.keys or KEY_NAME
-_CONFIG_PATTERN = re.compile(r"\b([a-zA-Z_][a-zA-Z0-9_]{1,30}(?:\.[a-zA-Z_][a-zA-Z0-9_]+){0,3})\b")
+_MODEL_RE = re.compile(r"\b([a-zA-Z0-9_\-]+\/[a-zA-Z0-9_\-]+)\b")
+# Config keys: dot.separated.keys or KEY_NAME — must have at least one dot
+# to distinguish from generic identifiers. Single words like "port" or "fix"
+# are not config keys even if they match the pattern. Capturing group 1 = full key.
+_CONFIG_RE = re.compile(
+    r"\b([a-zA-Z_][a-zA-Z0-9_]{0,30}"
+    r"(?:\.[a-zA-Z_][a-zA-Z0-9_]+){1,3})\b"
+)
 # Error substrings in double-quoted strings from the query
-_QUOTED_PATTERN = re.compile(r"\"([^\"]{3,80})\"")
+_QUOTED_RE = re.compile(r"\"([^\"]{3,80})\"")
 
 
 def _extract_query_tokens(query: str) -> Dict[str, Set[str]]:
@@ -53,6 +103,9 @@ def _extract_query_tokens(query: str) -> Dict[str, Set[str]]:
     Returns a dict of token_type -> set of normalized token strings.
     Each token type is tracked separately so we can check the SAME token
     appears in content, not just any token of the same type.
+
+    IMPORTANT: Path tokens must have path separators (forward or backslash) to avoid
+        extracting generic words like "port" as if they were file paths.
     """
     q = query
     tokens: Dict[str, Set[str]] = {
@@ -64,33 +117,53 @@ def _extract_query_tokens(query: str) -> Dict[str, Set[str]]:
         "quoted": set(),
     }
 
-    for pat, norm in _PATH_PATTERNS:
-        for m in pat.finditer(q):
-            tok = norm(m.group(1)) if m.lastindex else norm(m.group(0))
-            if len(tok) > 1:
-                tokens["path"].add(tok)
+    # Absolute paths: must start with / or drive letter
+    for m in _PATH_ABS_RE.finditer(q):
+        tok = m.group(1) if m.lastindex else m.group(0)
+        if "/" in tok or "\\" in tok:
+            tokens["path"].add(tok.lower())
 
-    for pat in _IDENT_PATTERNS:
-        for m in pat.finditer(q):
-            tok = m.group(0).lower()
-            # Filter out common english stopwords that happen to be identifiers
-            if tok not in {"the", "and", "for", "with", "from", "this", "that",
-                           "have", "has"}:
-                tokens["identifier"].add(tok)
+    # Tilde paths
+    for m in _PATH_TILDE_RE.finditer(q):
+        tokens["path"].add(m.group(0).lower())
 
-    for m in _PORT_PATTERN.finditer(q):
-        # Group 1 = host-prefix port (localhost:8080), group 2 = bare port
+    # Relative paths: must have ./ or ../ or embedded /
+    for m in _PATH_REL_RE.finditer(q):
+        tok = m.group(1) if m.lastindex else m.group(0)
+        if "/" in tok or "\\" in tok:
+            tokens["path"].add(tok.lower())
+
+    # Bare filenames: must have . + extension, path context already handled above
+    for m in _BARE_FNAME_RE.finditer(q):
+        tok = m.group(1).lower()
+        if "/" not in tok and "\\" not in tok and ".." not in tok:
+            tokens["path"].add(tok)
+
+    # Identifiers: strict length + filter stopwords
+    for m in _IDENT_RE.finditer(q):
+        tok = m.group(0).lower()
+        if tok not in _IDENTIFIER_STOPWORDS:
+            tokens["identifier"].add(tok)
+
+    # Port numbers
+    for m in _PORT_RE.finditer(q):
         port = m.group(1) or m.group(2)
         if port:
             tokens["port"].add(port)
 
-    for m in _MODEL_PATTERN.finditer(q):
+    # Model slugs
+    for m in _MODEL_RE.finditer(q):
         tokens["model"].add(m.group(1).lower())
 
-    for m in _CONFIG_PATTERN.finditer(q):
-        tokens["config"].add(m.group(1).lower())
+    # Config keys
+    for m in _CONFIG_RE.finditer(q):
+        tok = m.group(1).lower()
+        # Filter out generic words that should not drive strong classification
+        if tok not in _IDENTIFIER_STOPWORDS:
+            tokens["config"].add(tok)
 
-    for m in _QUOTED_PATTERN.finditer(q):
+    # Quoted substrings
+    for m in _QUOTED_RE.finditer(q):
         tokens["quoted"].add(m.group(1).lower())
 
     return tokens
@@ -113,6 +186,12 @@ def _token_in_content(token_type: str, tokens: Dict[str, Set[str]], content_lowe
             import re as _re
             if _re.search(r"(?:^|[^\d])" + _re.escape(tok) + r"(?:$|[^\d])", content_lower):
                 return True
+        elif token_type == "model":
+            # Model slugs like "hathor_rp-v.01-l3-8b-i1" must match as distinct tokens
+            # Use word boundaries to prevent "provider/model" matching inside a path
+            import re as _re2
+            if _re2.search(r"(?:^|[^\w\/])" + _re2.escape(tok) + r"(?:$|[^\w\/])", content_lower):
+                return True
         elif tok in content_lower:
             return True
     return False
@@ -123,10 +202,14 @@ def _classify_evidence(query: str, hit: Dict[str, Any]) -> str:
 
     A hit is STRONG only when:
       1. The full normalized query is an exact substring of the content, OR
-      2. At least one extracted query token (same string, not just same type)
-         appears in the content.
+      2. The query contains high-specificity tokens (path/port/model/config/quoted)
+         AND at least one of those specific tokens appears verbatim in the content, OR
+      3. The query contains NO high-specificity tokens
+         AND at least one extracted token (any type, including identifiers) appears
+         in the content, OR
+      4. Score >= 0.75 (fallback when no token matches, NON-EMPTY QUERY ONLY)
 
-    A hit is MEDIUM when score >= _MEDIUM_THRESHOLD but no token match.
+    A hit is MEDIUM when score >= 0.50 but no token match.
     A hit is WEAK otherwise.
     """
     content_lower = (hit.get("content") or "").lower()
@@ -139,14 +222,33 @@ def _classify_evidence(query: str, hit: Dict[str, Any]) -> str:
     # Extract concrete tokens from query
     qt = _extract_query_tokens(query)
 
-    # Strong: SAME extracted token (not just same type) appears in content
-    # Check each token group — at least one token must appear verbatim
+    # Specificity gate: classify high-specificity tokens vs generic identifiers
+    HIGH_SPECIFICITY_TYPES = ("path", "port", "model", "config", "quoted")
+    has_high_spec = any(qt.get(tt, set()) for tt in HIGH_SPECIFICITY_TYPES)
+
+    if has_high_spec:
+        # STRONG only when at least one HIGH-SPECIFICITY token matches exactly.
+        # Generic identifier matches do NOT count when high-spec tokens exist.
+        for ttype in HIGH_SPECIFICITY_TYPES:
+            if _token_in_content(ttype, qt, content_lower):
+                return "strong"
+        # High-spec tokens present but none matched — score-based only (medium/weak)
+        score = hit.get("score", 0)
+        if score >= 0.75:
+            return "strong"
+        if score >= 0.50:
+            return "medium"
+        return "weak"
+
+    # No high-specificity tokens — identifiers and paths may contribute to strong
     for ttype in ("path", "identifier", "port", "model", "config", "quoted"):
         if _token_in_content(ttype, qt, content_lower):
             return "strong"
 
     score = hit.get("score", 0)
-    if score >= 0.75:
+    # Score fallback: only for non-empty queries. Empty query has no tokens to
+    # match and should not claim strong evidence based on score alone.
+    if q and score >= 0.75:
         return "strong"
     if score >= 0.50:
         return "medium"
