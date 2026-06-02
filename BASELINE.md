@@ -53,3 +53,6 @@
 - 2026-05-28: 1.4.0→1.5.0 modular refactor, native 30-tool bridge
 - 2026-06-02: 1.5.1 retrieval fix pack (per-query min_score, safety net,
   token-budget raise, recency boost) — closes vague-NL zero-hit symptom.
+- 2026-06-02: 1.5.2 default-on winners from feature audit
+  (always_run_l3, memory_stack_enabled, wake_up_on_session_start);
+  README gained "Feature Audit / Recommended Defaults" section.

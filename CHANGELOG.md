@@ -1,5 +1,58 @@
 # Changelog
 
+## 1.5.2 (2026-06-02)
+
+### Default-on winners from the disabled-feature audit
+
+Live-tested all 14 disabled-by-default flags against the real palace with a
+10-query battery. Two features produce measurable gains with zero downside
+and are now enabled by default.
+
+- **`always_run_l3: true`** (was `false`): L3 (corpus-wide hybrid search)
+  now runs alongside L2 instead of only as a weak-L2 fallback. Live impact:
+  `mempalace` 2→8 hits (+1861c), `Hermes` 2→8 hits (+818c). Latency stays
+  70-160ms median; zero timeouts across 50+ runs. L2 dedup still collapses
+  duplicates, so the L1→L2→L3 flow has no double-counting.
+
+- **`memory_stack_enabled: true`** (was `false`): routes the L1 memory-stack
+  recall through MemPalace's real `MemoryStack` (top-importance drawers
+  grouped by room). Live impact: +1 L1 hit per query consistently, ~378c
+  of structured top-importance context, ~10-20ms latency cost.
+
+- **`wake_up_on_session_start: true`** (was `false`): loads L0 identity + L1
+  essentials at session start instead of forcing a first-turn wake that adds
+  latency to the first user-visible response.
+
+### Features that stay off (live audit findings)
+
+These flags remain `false` by default. Reasons documented for operators.
+
+- `use_kg` — only fires for capital-letter entities (regex `w[0].isupper()`);
+  misses ~90% of natural-language queries. Sometimes REPLACES better
+  semantic matches with weaker KG triples (observed: `Jupiter is the agent`
+  dropped 8 hits → 3 with KG on). Use only if your queries reliably
+  contain proper nouns.
+- `holographic_enabled` — `mempalace.holographic` does NOT exist in
+  MemPalace 3.3.6. Plugin's `HolographicMirror.ensure_enabled()` returns
+  `False`. 100% no-op.
+- `aaak_enabled` — `mempalace.aaak` does NOT exist. 100% no-op.
+- `use_halls` / `use_closets` — flag is not even referenced in the
+  retrieval code path. `mempalace.hallways` exists with real
+  `compute_hallways_for_wing`, but the plugin never calls it. Dead code.
+- `graph_enabled` / `graph_find_tunnels` / `follow_tunnels` — measurable
+  improvement ≈ 0 in the current palace (few cross-wing tunnels in test
+  data). Correct, but currently nothing to do.
+- `memory_mirror_enabled` — only affects `sync_turn()` and
+  `on_memory_write()` (mirrors built-in memory tool writes to MemPalace).
+  No read-side impact. Zero effect if you don't use the built-in memory tool.
+- `extract_facts_each_turn` — uses regex extraction. Plugin's own CHANGELOG
+  documents it as "conservative" (4+ char minimum, 80+ stop entities).
+  Off by design until an LLM-based extractor is available.
+- `diary_enabled` — roundtrip works (verified write+read, 9 entries in
+  palace) but doesn't move recall-block metrics. Use the native MCP
+  `mempalace_diary_write`/`_read` tools instead; the MCP path is more
+  reliable for cross-session continuity.
+
 ## 1.5.1 (2026-06-02)
 
 ### Recent-memory retrieval fix pack

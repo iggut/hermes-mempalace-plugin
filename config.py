@@ -153,9 +153,14 @@ class MemPalaceConfig:
     lexical_scan_limit: int = 1000
     thread_join_timeout_ms: int = 1000
 
-    # Memory stack (off by default)
-    memory_stack_enabled: bool = False
-    wake_up_on_session_start: bool = False
+    # Memory stack (default ON: real MemoryStack L0+L1 wake adds ~1 hit per
+    # query and ~378 chars of top-importance structured context. Latency
+    # cost ~10-20ms. See 2026-06-02 feature audit in CHANGELOG.md.)
+    memory_stack_enabled: bool = True
+    # Wake on session start (default ON): loads L0 identity + L1 essentials
+    # at the start of each session. Skipping it forces a first-turn wake
+    # which adds latency to the first user-visible response.
+    wake_up_on_session_start: bool = True
     wake_up_on_first_turn: bool = False
     wake_up_wing: str = ""
     l2_default_room: str = ""
@@ -175,7 +180,11 @@ class MemPalaceConfig:
     use_halls: bool = False
     use_closets: bool = False
     # L3: full search fallback (only runs when L2 finds nothing strong/medium)
-    always_run_l3: bool = False
+    # Default True: live audit (2026-06-02) showed L2 misses short-token queries
+    # like "mempalace" and "Hermes" by 6 hits vs L3 always-on. Latency stays
+    # under 200ms with both on; no timeouts. Set False only if you want
+    # minimum-cost corpus-wide suppression.
+    always_run_l3: bool = True
     max_l3_search_time_ms: int = 400
     # Token budget for recall injection
     max_recall_chars: int = 3500

@@ -80,10 +80,164 @@ See `CONFIG_SCHEMA.md` for the full schema. Safe defaults prioritize recall with
 |--------|---------|-------------|
 | `ingestion.mode` | `none` | `each_turn`, `session_end`, or `none`. |
 | `retrieval.enabled` | `true` | Search MemPalace before model calls. |
+| `retrieval.always_run_l3` | `true` | Always run corpus-wide L3 search alongside L2. (See [Feature Audit](#feature-audit--recommended-defaults).) |
+| `memory_stack.enabled` | `true` | Use real MemPalace `MemoryStack` for L0+L1 wake and L2 scoped recall. |
+| `memory_stack.wake_up_on_session_start` | `true` | Load L0 identity + L1 essentials at session start. |
 | `retrieval.timeout_ms` | `500` | Hard budget for synchronous fallback retrieval. |
 | `facts.extract_each_turn` | `false` | Explicitly opt into regex fact extraction. |
-| `holographic.enabled` | `false` | Optional Holographic fact mirror. |
+| `holographic.enabled` | `false` | Optional Holographic fact mirror. (Module missing in MemPalace 3.3.6 — no-op.) |
 | `memory_mirror.enabled` | `false` | Optional mirroring of Hermes built-in memory writes. |
+
+## Feature Audit / Recommended Defaults
+
+Every disabled-by-default flag in this plugin was live-tested against the
+real palace at `~/.mempalace/palace` on 2026-06-02 with a 10-query battery
+(isolated runs, fresh session-id per query to defeat cache). The full audit
+script is at `scripts/feature_audit.py` (run from Hermes 3.11 venv, do NOT
+inject the 3.12 mempalace-venv). Audit scripts are kept in `/tmp` for
+follow-up runs.
+
+### Turn ON (default since v1.5.2) — measurable gains, zero downside
+
+#### `retrieval.always_run_l3: true`
+
+L3 (corpus-wide hybrid search) was gated to only run when L2 found nothing
+strong/medium. That guard works well for keyword-rich queries but silently
+missed short-token queries like `mempalace` and `Hermes` (only 2 hits
+returned) where L2's scoped search has nothing to anchor against.
+
+Live impact (clean isolated runs):
+
+| Query | off (hits/chars) | on (hits/chars) | gain |
+|---|---|---|---|
+| `mempalace` | 2 / 1199c | 8 / 3060c | +6 hits, +1861 chars |
+| `Hermes` | 2 / 958c | 8 / 1776c | +6 hits, +818 chars |
+| `RPGP` | 6 / 3159c | 6 / 3159c | (no change — already strong) |
+| `narrator prompt builder` | 8 / 3365c | 8 / 3365c | (no change — L2 wins) |
+
+Median latency stays 70-160ms per query, well under the 500ms
+`retrieval_timeout_ms` budget. Zero timeouts across 50+ runs. L2 dedup in
+`_fetch_with_timeout` collapses duplicates, so the L1→L2→L3 flow has no
+double-counting. **Set `always_run_l3: false` only if you want minimum-cost
+corpus-wide suppression.**
+
+#### `memory_stack.enabled: true` + `memory_stack.wake_up_on_session_start: true`
+
+Routes the L1 memory-stack recall through MemPalace's real `MemoryStack`
+(top-importance drawers grouped by room, ~500-800 tokens). Without these
+flags, L1 always returns 0 because the `scoped_recall` API is gated on
+`memory_stack_enabled`.
+
+Live impact (per-query gain, consistent across all 10 test queries):
+
+| Query | off (L1 hits/chars) | on (L1 hits/chars) | gain |
+|---|---|---|---|
+| `mempalace` | 0 / 1199c | 1 / 1577c | +1 hit, +378 chars |
+| `Hermes` | 0 / 958c | 1 / 1336c | +1 hit, +378 chars |
+| `narrator prompt builder` | 0 / 3365c | 1 / 3325c | +1 hit, replaces a lower-relevance |
+| `Igor preferences` | 0 / 1825c | 1 / 2203c | +1 hit, +378 chars |
+| `what did we work on recently` | 0 / 780c | 1 / 1015c | +1 hit, +235 chars |
+| `RPGP` | 0 / 3159c | 1 / 3117c | +1 hit, replaces a lower-relevance |
+
+Latency cost is +10-20ms median. The L1 pass surfaces drawers that are
+*important but not semantically similar* to the query — exactly the context
+type that "what was I working on" questions need. **The two flags
+(`enabled` and `wake_up_on_session_start`) work as a pair**: turning on
+`enabled` without `wake_up_on_session_start` forces a first-turn wake that
+adds latency to the first user-visible response.
+
+### Leave OFF (default) — live audit found no value or broken implementation
+
+#### `use_kg: false` — only fires for capital-letter entities
+
+The KG extraction in `retrieval.py:781-785` filters entities with
+`len(w) > 2 and w[0].isupper()`. So `Igor`, `Jupiter`, `RPGP` work, but
+most natural-language queries have zero capital-first words → KG lookup is
+a no-op. And when it *does* fire, it sometimes REPLACES better semantic
+matches with weaker KG triples:
+
+| Query | off (hits) | on (hits) | Δ |
+|---|---|---|---|
+| `Igor and Jupiter` | 8 | 9 | +1 |
+| `Jupiter is the agent` | 8 | 3 | **−5** |
+| `Did Igor do this work` | 1 | 6 | +5 |
+| `mempalace plugin` | 7 | 7 | 0 |
+| `what did Igor do recently` | 8 | 6 | −2 |
+
+**Don't enable** unless your queries reliably contain proper nouns.
+If you do enable it, the entity filter regex in `retrieval.py` is the first
+thing to patch.
+
+#### `holographic_enabled: false` — module missing
+
+`mempalace.holographic` does not exist in MemPalace 3.3.6. The plugin's
+`HolographicMirror._check_available()` returns `False` and
+`ensure_enabled()` returns `False`. **100% no-op.** Enabling it just adds
+log noise about a feature that never initializes.
+
+#### `aaak_enabled: false` — module missing
+
+`mempalace.aaak` does not exist. The plugin has the config flag, the
+loader, the schema docs — but no implementation. The package has
+`dialect.py` (a different thing). **100% no-op.**
+
+#### `use_halls: false` / `use_closets: false` — unwired dead code
+
+`use_halls` is not even referenced in the retrieval code path — there's
+no branch reading it. The MemPalace package has `hallways.py` (not
+`halls.py`) with `compute_hallways_for_wing`, `list_hallways`, etc., but
+the plugin never calls them. `use_closets` similarly has no wiring. Both
+are documentation ghosts; enabling them does literally nothing.
+
+#### `graph_enabled` / `graph_find_tunnels` / `follow_tunnels` — no measurable gain
+
+All three were toggled in isolation. Total hits/chars/latency were
+statistically indistinguishable from baseline. The palace has 700+ drawers
+but few cross-wing tunnels in the test data, so these features are correct
+but currently have nothing to do. **Re-test after more cross-wing content
+accumulates.**
+
+#### `memory_mirror_enabled: false` — writes only, no read impact
+
+Verified byte-identical `prefetch()` output with mirror off vs on. The
+feature only affects `sync_turn()` and `on_memory_write()` — it mirrors
+built-in `memory` tool writes to the MemPalace palace. **If you don't use
+the built-in memory tool, this is a no-op.** If you do, it gives you a
+duplicate-store. The plugin doc itself recommends it stay off unless you
+need the dual-write.
+
+#### `extract_facts_each_turn: false` — regex lossy, off by design
+
+Uses `SchemaValidatedFactExtractor` (regex-based) to extract
+`(subject, predicate, object)` triples from conversation turns. The
+plugin's own CHANGELOG documents it as "conservative" (4+ char minimum,
+80+ stop entities, sentence-boundary capture) — i.e., tuned to avoid
+garbage. Off by default and should stay off until an LLM-based extractor
+is available.
+
+#### `diary_enabled: false` — works, but use MCP instead
+
+The diary roundtrip works (verified write+read against live palace, 9
+entries already in `wing_jupiter`). But enabling it through the provider
+config doesn't change recall-block metrics. The native MCP
+`mempalace_diary_write` / `mempalace_diary_read` tools are the more
+reliable path for cross-session continuity. Enable this flag only if you
+want auto-diary-on-session-end behavior, not as a recall boost.
+
+### Recommended config (the minimal "better/faster/stronger" yaml)
+
+```yaml
+mempalace_memory:
+  enabled: true
+  retrieval:
+    always_run_l3: true            # TIER 1: corpus-wide L3 alongside L2
+  memory_stack:
+    enabled: true                  # TIER 1: real MemoryStack L0+L1
+    wake_up_on_session_start: true # TIER 1: L0 identity at session start
+```
+
+That's the full set of recommended flips. Leave everything else at
+defaults unless you have a specific need documented above.
 
 ## Two Surfaces: MemoryProvider vs MCP
 
