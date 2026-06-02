@@ -683,11 +683,18 @@ class MemPalaceAPI:
         wing: str = "",
         room: str = "",
         limit: int = 8,
-        min_score: float = 0.3,
+        min_score: Optional[float] = None,
     ) -> List[Dict[str, Any]]:
+        """Search the palace. If ``min_score`` is None, use config default.
+
+        Pass a custom ``min_score`` (e.g. 0.3 for vague NL asks) to override.
+        """
+        effective_min = cfg_min = float(self._config.min_score) if self._config else 0.3
+        if min_score is not None:
+            effective_min = float(min_score)
         if not query:
             return []
-        semantic = self._semantic_search(query, wing=wing, room=room, limit=limit, min_score=min_score)
+        semantic = self._semantic_search(query, wing=wing, room=room, limit=limit, min_score=effective_min)
         if len(semantic) < limit:
             lexical = self._lexical_fallback(query, limit=limit - len(semantic))
             seen_ids = {r["drawer_id"] for r in semantic}

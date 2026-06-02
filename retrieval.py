@@ -586,8 +586,36 @@ class MemPalaceRetrieval:
                 seen_ids.add(did)
                 deduped.append(hit)
 
-        # Sort by score descending
-        deduped.sort(key=lambda h: h.get("score", 0), reverse=True)
+        # Sort: score primary, recency tiebreaker. When prioritize_recent_days
+        # is set, hits with created_at within the window get a small additive
+        # score boost so fresh memories win ties with ancient ones.
+        recency_window = self._config.prioritize_recent_days
+        if recency_window > 0:
+            from datetime import datetime, timezone
+
+            now = datetime.now(timezone.utc)
+
+            def _recency_boost(h: Dict[str, Any]) -> float:
+                date_str = h.get("date") or h.get("created_at") or ""
+                if not date_str:
+                    return 0.0
+                raw = str(date_str)[:10]
+                try:
+                    dt = datetime.strptime(raw, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+                except Exception:
+                    return 0.0
+                age_days = (now - dt).days
+                if age_days < 0 or age_days > recency_window:
+                    return 0.0
+                # Linear ramp: 0.10 boost at age=0, 0.0 at age=window
+                return 0.10 * (1.0 - age_days / recency_window)
+
+            deduped.sort(
+                key=lambda h: (h.get("score", 0) + _recency_boost(h), str(h.get("date") or "")),
+                reverse=True,
+            )
+        else:
+            deduped.sort(key=lambda h: h.get("score", 0), reverse=True)
 
         # Format with char budget
         recall_block = self._format_recall_block(query, deduped, l0_text)
@@ -686,6 +714,23 @@ class MemPalaceRetrieval:
     # L2 — targeted scoped recall
     # ----------------------------------------------------------------
 
+    def _score_floor_for(self, query: str) -> float:
+        """Pick the right min_score floor for this query.
+
+        Vague NL queries (no high-specificity tokens) need a relaxed floor
+        so the safety-net has hits to work with. Token-rich queries keep
+        the strict floor because false positives hurt more.
+        """
+        strict = self._config.min_score
+        relaxed = max(0.25, strict - 0.2)
+        if strict <= relaxed:
+            return strict
+        qt = _extract_query_tokens(query)
+        HIGH_SPECIFICITY_TYPES = ("path", "port", "model", "config", "quoted")
+        if any(qt.get(tt, set()) for tt in HIGH_SPECIFICITY_TYPES):
+            return strict
+        return relaxed
+
     def _run_l2_scoped_recall(
         self, query: str, session_id: str, wing: str, room: str
     ) -> List[Dict[str, Any]]:
@@ -697,6 +742,10 @@ class MemPalaceRetrieval:
         # Determine active wing/room
         use_wing = wing or self._config.wake_up_wing or ""
         use_room = room or self._config.l2_default_room or ""
+
+        # Per-query min_score: relaxed floor for vague NL so the safety net
+        # can promote the best medium hit instead of returning zero hits.
+        floor = self._score_floor_for(query)
 
         # L2.5: exact-match step — run BEFORE semantic search when query
         # contains concrete lexical tokens (paths, identifiers, ports).
@@ -723,6 +772,7 @@ class MemPalaceRetrieval:
                 room=use_room or None,
                 limit=min(self._config.max_results, 5),
                 timeout_ms=min(self._config.max_l3_search_time_ms, 300),
+                min_score=floor,
             )
             hits.extend(scoped_hits)
 
@@ -854,6 +904,7 @@ class MemPalaceRetrieval:
             room=room or None,
             limit=self._config.max_results,
             timeout_ms=l3_timeout,
+            min_score=self._score_floor_for(query),
         )
 
     def _search(
@@ -863,8 +914,14 @@ class MemPalaceRetrieval:
         room: Optional[str] = None,
         limit: int = 8,
         timeout_ms: int = 400,
+        min_score: Optional[float] = None,
     ) -> List[Dict[str, Any]]:
-        """Run API search with hard timeout."""
+        """Run API search with hard timeout.
+
+        ``min_score`` defaults to the config value. Pass a smaller value
+        (e.g. 0.3) when the caller has no high-specificity tokens and we
+        want to give the safety-net logic something to work with.
+        """
         timeout_s = max(0.05, timeout_ms / 1000.0)
 
         def _call():
@@ -873,7 +930,7 @@ class MemPalaceRetrieval:
                 wing=wing or None,
                 room=room or None,
                 limit=limit,
-                min_score=self._config.min_score,
+                min_score=min_score if min_score is not None else self._config.min_score,
             )
 
         results = _run_with_timeout(_call, timeout_seconds=timeout_s, default=None)
@@ -902,7 +959,12 @@ class MemPalaceRetrieval:
           - total block ≤ max_recall_chars
           - per hit content ≤ max_quote_chars_per_hit
           - total quoted chars ≤ max_total_quoted_chars
-          - weak hits omitted from block entirely
+          - weak hits omitted from block by default
+          - SAFETY NET: if the query has NO high-specificity tokens and no
+            strong/medium hits were found, force-include the best available
+            medium-classified hit (without the [medium] prefix downgrade) so
+            vague natural-language asks aren't completely blind. The
+            classification still applies to all other hits.
         """
         max_total = self._config.max_recall_chars
         max_per_hit = self._config.max_quote_chars_per_hit
@@ -917,10 +979,38 @@ class MemPalaceRetrieval:
             # L0 is a prose block, not a hit list — just append it
             parts.append(f"[wake-up]\n{l0_text}")
 
-        # Insert KG header before first KG-sourced hit (backward compat)
-        kg_started = False
+        # Pre-classify hits and determine if safety net should apply.
+        # Safety net: vague NL queries (no high-spec tokens) that have NO
+        # strong/medium hits must still surface at least the best medium hit,
+        # otherwise the model gets no context at all.
+        classified: List[tuple] = []  # (evidence, hit) — preserves order
         for hit in hits:
             evidence = _classify_evidence(query, hit)
+            classified.append((evidence, hit))
+
+        has_strong_or_medium = any(ev in ("strong", "medium") for ev, _ in classified)
+        query_tokens = _extract_query_tokens(query)
+        HIGH_SPECIFICITY_TYPES = ("path", "port", "model", "config", "quoted")
+        query_has_high_spec = any(query_tokens.get(tt, set()) for tt in HIGH_SPECIFICITY_TYPES)
+        apply_safety_net = (not has_strong_or_medium) and (not query_has_high_spec) and bool(classified)
+
+        if apply_safety_net:
+            # Promote the best medium hit (or weakest non-weakest) to strong
+            # for this one query — it's our only signal, treat it as strong
+            # so the model trusts it.
+            best_idx = 0
+            best_score = -1.0
+            for i, (ev, h) in enumerate(classified):
+                s = h.get("score", 0)
+                if s > best_score:
+                    best_score = s
+                    best_idx = i
+            ev0, h0 = classified[best_idx]
+            classified[best_idx] = ("strong", h0)
+
+        # Insert KG header before first KG-sourced hit (backward compat)
+        kg_started = False
+        for evidence, hit in classified:
             if evidence == "weak":
                 self._diag["weak_omissions"] += 1
                 dropped += 1
@@ -1000,6 +1090,8 @@ class MemPalaceRetrieval:
                 "max_quote_chars_per_hit": self._config.max_quote_chars_per_hit,
                 "max_total_quoted_chars": self._config.max_total_quoted_chars,
                 "max_l3_search_time_ms": self._config.max_l3_search_time_ms,
+                "min_score": self._config.min_score,
+                "prioritize_recent_days": self._config.prioritize_recent_days,
                 "follow_tunnels": self._config.follow_tunnels,
                 "max_tunnel_hops": self._config.max_tunnel_hops,
                 "max_tunnel_hits": self._config.max_tunnel_hits,

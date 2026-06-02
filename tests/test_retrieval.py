@@ -30,6 +30,9 @@ class FakeConfig:
         self.background_retrieval = True
         self.min_score = 0.3
         self.max_results = 8
+        # Recency boost
+        self.prioritize_recent_days = 0  # disabled in tests; recency-boost
+        # path uses datetime which makes assertions brittle.
         # Staged recall
         self.max_wake_block_chars = 600
         self.max_recall_chars = 1200

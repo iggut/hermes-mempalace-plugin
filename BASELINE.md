@@ -48,3 +48,8 @@
 4. Duplicate collapse by drawer_id
 5. Tunnel-following with config caps
 6. Config for all token budget parameters
+
+## Patch history
+- 2026-05-28: 1.4.0→1.5.0 modular refactor, native 30-tool bridge
+- 2026-06-02: 1.5.1 retrieval fix pack (per-query min_score, safety net,
+  token-budget raise, recency boost) — closes vague-NL zero-hit symptom.

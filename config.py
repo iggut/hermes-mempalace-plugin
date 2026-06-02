@@ -105,7 +105,10 @@ class MemPalaceConfig:
     vector_weight: float = 0.6
     bm25_weight: float = 0.4
     max_results: int = 8
-    min_score: float = 0.3
+    min_score: float = 0.5
+    # Recency boost: drawers with created_at within this many days are
+    # prioritized over older hits with the same score (set to 0 to disable).
+    prioritize_recent_days: int = 30
     include_kg_facts: bool = False  # off by default
     kg_entity_limit: int = 5
     retrieval_timeout_ms: int = 500
@@ -175,9 +178,9 @@ class MemPalaceConfig:
     always_run_l3: bool = False
     max_l3_search_time_ms: int = 400
     # Token budget for recall injection
-    max_recall_chars: int = 1800
-    max_quote_chars_per_hit: int = 280
-    max_total_quoted_chars: int = 1400
+    max_recall_chars: int = 3500
+    max_quote_chars_per_hit: int = 320
+    max_total_quoted_chars: int = 2400
     # Cross-wing tunnels
     follow_tunnels: bool = False
     max_tunnel_hops: int = 1
@@ -227,14 +230,15 @@ def _finalize_config(cfg: MemPalaceConfig) -> MemPalaceConfig:
     cfg.cache_ttl_seconds = _clamp(cfg.cache_ttl_seconds, 1, 300, 30)
 
     cfg.max_wake_block_chars = _clamp(cfg.max_wake_block_chars, 100, 5000, 600)
-    cfg.max_recall_chars = _clamp(cfg.max_recall_chars, 200, 8000, 1800)
-    cfg.max_quote_chars_per_hit = _clamp(cfg.max_quote_chars_per_hit, 50, 2000, 280)
-    cfg.max_total_quoted_chars = _clamp(cfg.max_total_quoted_chars, 100, 5000, 1400)
+    cfg.max_recall_chars = _clamp(cfg.max_recall_chars, 200, 8000, 3500)
+    cfg.max_quote_chars_per_hit = _clamp(cfg.max_quote_chars_per_hit, 50, 2000, 320)
+    cfg.max_total_quoted_chars = _clamp(cfg.max_total_quoted_chars, 100, 5000, 2400)
     cfg.max_l3_search_time_ms = _clamp(cfg.max_l3_search_time_ms, 50, 2000, 400)
     cfg.max_tunnel_hops = _clamp(cfg.max_tunnel_hops, 1, 5, 1)
     cfg.max_tunnel_hits = _clamp(cfg.max_tunnel_hits, 1, 10, 2)
 
-    cfg.min_score = _clamp_float(cfg.min_score, 0.0, 1.0, 0.3)
+    cfg.min_score = _clamp_float(cfg.min_score, 0.0, 1.0, 0.5)
+    cfg.prioritize_recent_days = _clamp(cfg.prioritize_recent_days, 0, 365, 30)
     cfg.vector_weight = _clamp_float(cfg.vector_weight, 0.0, 1.0, 0.6)
     cfg.bm25_weight = _clamp_float(cfg.bm25_weight, 0.0, 1.0, 0.4)
     cfg.holographic_default_trust = _clamp_float(
@@ -315,6 +319,7 @@ def _apply_plugin_sections(cfg: MemPalaceConfig, plugin_config: Dict[str, Any]) 
     _apply_if_present(cfg, retr, "bm25_weight")
     _apply_if_present(cfg, retr, "max_results")
     _apply_if_present(cfg, retr, "min_score")
+    _apply_if_present(cfg, retr, "prioritize_recent_days")
     _apply_if_present(cfg, retr, "include_kg_facts", None, bool)
     _apply_if_present(cfg, retr, "kg_entity_limit")
     _apply_if_present(cfg, retr, "timeout_ms", "retrieval_timeout_ms")
@@ -414,6 +419,7 @@ def _apply_plugin_sections(cfg: MemPalaceConfig, plugin_config: Dict[str, Any]) 
         "chunk_size", "chunk_overlap", "target_wing", "target_room", "agent_name",
         "fact_extraction_mode", "min_confidence", "max_facts_per_turn", "allowed_predicates",
         "retrieval_mode", "vector_weight", "bm25_weight", "max_results", "min_score",
+        "prioritize_recent_days",
         "include_kg_facts", "kg_entity_limit", "retrieval_timeout_ms",
         "holographic_default_trust",
         "mirror_add", "mirror_replace", "mirror_remove", "mirror_target_wing",

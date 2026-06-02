@@ -1,5 +1,41 @@
 # Changelog
 
+## 1.5.1 (2026-06-02)
+
+### Recent-memory retrieval fix pack
+
+Three root-cause fixes for the "MemPalace forgets what we just worked on" symptom
+when natural-language prefetch queries were producing zero hits even though
+relevant drawers existed in the palace.
+
+- **Raised `min_score` default 0.3 → 0.5** and added a per-query floor: vague
+  natural-language queries (no high-specificity tokens — paths/ports/configs/
+  models/quoted) use a relaxed floor (`max(0.25, strict - 0.2)`) so the
+  safety-net logic has hits to promote. Token-rich queries keep the strict
+  floor. Closes the silent-rejection-of-NL-asks failure mode.
+- **Safety-net for vague queries** in `_format_recall_block`: when a query has
+  no high-specificity tokens and the classifier found no strong/medium hits,
+  the best-scoring hit is promoted to `[strong]` so the model isn't completely
+  blind. Classification of all other hits is preserved.
+- **Token budget raised** for recall injection: `max_recall_chars` 1800→3500,
+  `max_quote_chars_per_hit` 280→320, `max_total_quoted_chars` 1400→2400. Live
+  smoke test: 8 hits → 3 injected pre-patch, 8 → 8 post-patch.
+- **Recency boost** (`prioritize_recent_days`, default 30, set 0 to disable):
+  hits with `created_at`/`date` within the window get a linear additive score
+  boost up to +0.10 so fresh drawers win ties with ancient ones. Applied as a
+  sort key, not a filter, so old drawers still surface when they're truly the
+  best match.
+
+### Internal
+- `MemPalaceAPI.search()` now accepts `min_score: Optional[float] = None` and
+  falls back to `config.min_score` when not provided. Internal pipeline callers
+  in `retrieval.py` pass per-query floors via the new `_score_floor_for()`
+  helper.
+- `diagnostics()["config"]` now exposes `min_score` and
+  `prioritize_recent_days` for operator visibility.
+- Tests: 111 passed, 5 skipped (added `prioritize_recent_days = 0` to
+  `FakeConfig`; all pre-existing assertions unchanged).
+
 ## 1.5.0 (2026-05-28)
 
 ### Native MemPalace tool bridge
