@@ -376,6 +376,59 @@ class MemPalaceAPI:
             "description": "Force reconnect to the palace database. Use after external scripts or CLI commands modified the palace directly, which can leave the in-memory index stale.",
             "parameters": {"type": "object", "properties": {}},
         },
+        {
+            "name": "mempalace_dynamics_apply",
+            "description": (
+                "Apply Ebbinghaus exponential decay to all hall and tunnel connection "
+                "strengths based on time since last activation. Higher stability = "
+                "slower decay (Cepeda spacing effect). Pure admin operation — call "
+                "this periodically (e.g. via cron) or before large prefetch batches. "
+                "Returns the count of records touched, mean strength before/after, "
+                "and the timestamp used."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "wing": {
+                        "type": "string",
+                        "description": "Optional wing filter — only decay halls in this wing + tunnels touching it. Default: all wings.",
+                    },
+                    "now": {
+                        "type": "string",
+                        "description": "Optional ISO-8601 timestamp for deterministic decay (testing). Default: current UTC.",
+                    },
+                },
+            },
+        },
+        {
+            "name": "mempalace_potentiate",
+            "description": (
+                "Strengthen a hall or tunnel connection on a co-access event "
+                "(Hebbian potentiation). Updates strength (capped at MAX_STRENGTH=5.0), "
+                "last_activated, access_count, and grows stability if the gap since the "
+                "prior activation is at least 1 hour (the Cepeda spacing effect). "
+                "Use this from the retrieval path: every time a connection is surfaced "
+                "in a recall block, the system reinforces it."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "connection_id": {
+                        "type": "string",
+                        "description": "Hall or tunnel record ID to potentiate.",
+                    },
+                    "kind": {
+                        "type": "string",
+                        "description": "'hall' or 'tunnel'. Default: 'tunnel'.",
+                    },
+                    "increment": {
+                        "type": "number",
+                        "description": "Strength increment. Default: 0.05 (POTENTIATION_INCREMENT).",
+                    },
+                },
+                "required": ["connection_id"],
+            },
+        },
     ]
 
     def __init__(
@@ -413,6 +466,16 @@ class MemPalaceAPI:
         self._sanitize_iso_temporal_fn: Any = None
         self._native_config_cls: Any = None
         self._shared_system_client: Any = None
+
+        # Dynamics (Hebb/Ebbinghaus/Cepeda) — set by _ensure_imported.
+        self._apply_decay_fn: Any = None
+        self._potentiate_fn: Any = None
+        self._initialize_dynamics_fn: Any = None
+        # Persistence helpers for halls + tunnels (for decay/potentiate).
+        self._load_halls_fn: Any = None
+        self._save_halls_fn: Any = None
+        self._load_tunnels_fn: Any = None
+        self._save_tunnels_fn: Any = None
 
         self._col: Any = None
         self._kg: Any = None
@@ -508,6 +571,42 @@ class MemPalaceAPI:
             self._shared_system_client = _SharedSystemClient
         except Exception:
             self._shared_system_client = None
+
+        # Dynamics (Hebbian potentiation + Ebbinghaus decay) and the
+        # persistence helpers for halls + tunnels. The dynamics functions
+        # are pure (no I/O) — the persistence helpers are module-level
+        # functions inside hallways / palace_graph that read/write JSON.
+        try:
+            from mempalace.dynamics import (
+                apply_decay as _apply_decay,
+                potentiate as _potentiate,
+                initialize_dynamics_fields as _init_dyn,
+            )
+            self._apply_decay_fn = _apply_decay
+            self._potentiate_fn = _potentiate
+            self._initialize_dynamics_fn = _init_dyn
+        except Exception as e:
+            logger.debug("[MemPalaceAPI] dynamics import failed: %s", e)
+
+        try:
+            from mempalace.hallways import (
+                _load_hallways as _load_halls,
+                _save_hallways as _save_halls,
+            )
+            self._load_halls_fn = _load_halls
+            self._save_halls_fn = _save_halls
+        except Exception as e:
+            logger.debug("[MemPalaceAPI] hallways persistence import failed: %s", e)
+
+        try:
+            from mempalace.palace_graph import (
+                _load_tunnels as _load_tunnels,
+                _save_tunnels as _save_tunnels,
+            )
+            self._load_tunnels_fn = _load_tunnels
+            self._save_tunnels_fn = _save_tunnels
+        except Exception as e:
+            logger.debug("[MemPalaceAPI] palace_graph persistence import failed: %s", e)
 
         self._imported = bool(self._get_collection_fn)
         if not self._imported:
@@ -1147,6 +1246,173 @@ class MemPalaceAPI:
             logger.debug("[MemPalaceAPI] scoped_recall failed: %s", e)
             return ""
 
+    # ----------------------------------------------------------------
+    # Dynamics (Hebb + Ebbinghaus + Cepeda) — living connection layer
+    # ----------------------------------------------------------------
+
+    def dynamics_apply(
+        self,
+        wing: Optional[str] = None,
+        now: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Apply Ebbinghaus exponential decay to all halls and tunnels.
+
+        Loads each record, calls ``apply_decay()`` (mutating in place),
+        persists back to disk, and returns aggregate stats. Optional
+        ``wing`` filter only touches halls in that wing and tunnels whose
+        source or target is that wing.
+
+        Pure admin operation. Call periodically (e.g. daily cron) or
+        before a large prefetch batch.
+
+        Returns a dict with: count, mean_strength_before, mean_strength_after,
+        halls_touched, tunnels_touched, now (the timestamp used).
+        """
+        self._ensure_imported()
+        if self._apply_decay_fn is None:
+            return {"error": "mempalace.dynamics not importable", "count": 0}
+        # Parse optional 'now' once
+        parsed_now = None
+        if now:
+            try:
+                from datetime import datetime, timezone
+                v = now.strip()
+                if v.endswith("Z"):
+                    v = v[:-1] + "+00:00"
+                parsed_now = datetime.fromisoformat(v)
+                if parsed_now.tzinfo is None:
+                    parsed_now = parsed_now.replace(tzinfo=timezone.utc)
+            except Exception as e:
+                return {"error": f"invalid 'now' timestamp: {e}"}
+
+        stats = {
+            "count": 0,
+            "mean_strength_before": 0.0,
+            "mean_strength_after": 0.0,
+            "halls_touched": 0,
+            "tunnels_touched": 0,
+            "now": (parsed_now.isoformat() if parsed_now else None),
+        }
+        strengths_before: List[float] = []
+        strengths_after: List[float] = []
+
+        # --- Halls ---
+        halls_dirty: List[Dict[str, Any]] = []
+        if self._load_halls_fn is not None:
+            try:
+                all_halls = list(self._load_halls_fn() or [])
+            except Exception as e:
+                logger.debug("[MemPalaceAPI] load_halls failed: %s", e)
+                all_halls = []
+            for h in all_halls:
+                if wing and h.get("wing") != wing:
+                    continue
+                strengths_before.append(float(h.get("strength", 1.0)))
+                self._apply_decay_fn(h, now=parsed_now) if parsed_now else self._apply_decay_fn(h)
+                strengths_after.append(float(h.get("strength", 1.0)))
+                stats["count"] += 1
+                stats["halls_touched"] += 1
+                halls_dirty.append(h)
+        # Persist halls (replace the touched wing's records; preserve others)
+        if self._save_halls_fn is not None and halls_dirty:
+            try:
+                if wing:
+                    other = [h for h in (self._load_halls_fn() or []) if h.get("wing") != wing]
+                    self._save_halls_fn(other + halls_dirty)
+                else:
+                    self._save_halls_fn(halls_dirty)
+            except Exception as e:
+                logger.debug("[MemPalaceAPI] save_halls failed: %s", e)
+
+        # --- Tunnels ---
+        tunnels_dirty: List[Dict[str, Any]] = []
+        if self._load_tunnels_fn is not None:
+            try:
+                all_tunnels = list(self._load_tunnels_fn() or [])
+            except Exception as e:
+                logger.debug("[MemPalaceAPI] load_tunnels failed: %s", e)
+                all_tunnels = []
+            for t in all_tunnels:
+                # Tunnels are symmetric: source/target both count as "wing match"
+                if wing:
+                    sw = (t.get("source") or {}).get("wing") if isinstance(t.get("source"), dict) else t.get("source_wing")
+                    tw = (t.get("target") or {}).get("wing") if isinstance(t.get("target"), dict) else t.get("target_wing")
+                    if wing not in (sw, tw):
+                        continue
+                strengths_before.append(float(t.get("strength", 1.0)))
+                self._apply_decay_fn(t, now=parsed_now) if parsed_now else self._apply_decay_fn(t)
+                strengths_after.append(float(t.get("strength", 1.0)))
+                stats["count"] += 1
+                stats["tunnels_touched"] += 1
+                tunnels_dirty.append(t)
+        if self._save_tunnels_fn is not None and tunnels_dirty:
+            try:
+                if wing:
+                    sw = wing
+                    def _touches(t: Dict[str, Any]) -> bool:
+                        s = (t.get("source") or {}).get("wing") if isinstance(t.get("source"), dict) else t.get("source_wing")
+                        tg = (t.get("target") or {}).get("wing") if isinstance(t.get("target"), dict) else t.get("target_wing")
+                        return sw in (s, tg)
+                    other = [t for t in (self._load_tunnels_fn() or []) if not _touches(t)]
+                    self._save_tunnels_fn(other + tunnels_dirty)
+                else:
+                    self._save_tunnels_fn(tunnels_dirty)
+            except Exception as e:
+                logger.debug("[MemPalaceAPI] save_tunnels failed: %s", e)
+
+        if strengths_before:
+            stats["mean_strength_before"] = round(sum(strengths_before) / len(strengths_before), 4)
+        if strengths_after:
+            stats["mean_strength_after"] = round(sum(strengths_after) / len(strengths_after), 4)
+        return stats
+
+    def potentiate(
+        self,
+        connection_id: str,
+        kind: str = "tunnel",
+        increment: float = 0.05,
+    ) -> Dict[str, Any]:
+        """Hebbian potentiation — strengthen a single hall or tunnel.
+
+        The connection is found by ID in the appropriate store, updated
+        in-memory via ``potentiate()``, and persisted back to disk. The
+        full updated record is returned.
+        """
+        self._ensure_imported()
+        if self._potentiate_fn is None:
+            return {"error": "mempalace.dynamics not importable"}
+        kind = (kind or "tunnel").lower()
+        if kind not in ("hall", "tunnel"):
+            return {"error": f"kind must be 'hall' or 'tunnel', got {kind!r}"}
+
+        load_fn = self._load_halls_fn if kind == "hall" else self._load_tunnels_fn
+        save_fn = self._save_halls_fn if kind == "hall" else self._save_tunnels_fn
+        if load_fn is None or save_fn is None:
+            return {"error": f"persistence helpers missing for {kind}"}
+        try:
+            records = list(load_fn() or [])
+        except Exception as e:
+            return {"error": f"load failed: {e}"}
+        target: Optional[Dict[str, Any]] = None
+        target_idx = -1
+        for i, r in enumerate(records):
+            if r.get("id") == connection_id:
+                target = r
+                target_idx = i
+                break
+        if target is None or target_idx < 0:
+            return {"error": f"{kind} not found: {connection_id}"}
+        try:
+            self._potentiate_fn(target, increment=float(increment))
+        except Exception as e:
+            return {"error": f"potentiate failed: {e}"}
+        records[target_idx] = target
+        try:
+            save_fn(records)
+        except Exception as e:
+            return {"error": f"persist failed: {e}", "record": target}
+        return {"success": True, "kind": kind, "id": connection_id, "record": target}
+
     def get_tool_schemas(self) -> List[Dict[str, Any]]:
         return deepcopy(self.TOOL_SPECS)
 
@@ -1186,6 +1452,8 @@ class MemPalaceAPI:
             "mempalace_hook_settings": lambda a: self.tool_hook_settings(a.get("silent_save"), a.get("desktop_toast")),
             "mempalace_memories_filed_away": lambda a: self.tool_memories_filed_away(),
             "mempalace_reconnect": lambda a: self.tool_reconnect(),
+            "mempalace_dynamics_apply": lambda a: self.dynamics_apply(a.get("wing"), a.get("now")),
+            "mempalace_potentiate": lambda a: self.potentiate(a["connection_id"], a.get("kind", "tunnel"), a.get("increment", 0.05)),
         }
         handler = dispatch.get(tool_name)
         if handler is None:

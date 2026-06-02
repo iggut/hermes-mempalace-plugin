@@ -56,3 +56,8 @@
 - 2026-06-02: 1.5.2 default-on winners from feature audit
   (always_run_l3, memory_stack_enabled, wake_up_on_session_start);
   README gained "Feature Audit / Recommended Defaults" section.
+- 2026-06-02: 1.5.3 MemPalace dynamics integration — adds
+  mempalace_dynamics_apply + mempalace_potentiate tools (Hebb +
+  Ebbinghaus + Cepeda), wires real connection strength into the
+  retrieval sort key, fires Hebbian reinforcement on every successful
+  recall. Two new diagnostics counters.

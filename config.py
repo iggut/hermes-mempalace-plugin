@@ -194,6 +194,12 @@ class MemPalaceConfig:
     follow_tunnels: bool = False
     max_tunnel_hops: int = 1
     max_tunnel_hits: int = 2
+    # Dynamics (Hebbian + Ebbinghaus) — default ON; uses MemPalace's
+    # mempalace.dynamics module to strength-sort hits and reinforce the
+    # connections the user actually sees. Requires halls + tunnels
+    # persistence to be available (i.e. the palace has graph data). Set
+    # false to fall back to the hand-rolled recency boost only.
+    dynamics_enabled: bool = True
     # Duplicate guard for session importer
     avoid_duplicate_session_imports: bool = True
 
@@ -344,6 +350,7 @@ def _apply_plugin_sections(cfg: MemPalaceConfig, plugin_config: Dict[str, Any]) 
     _apply_if_present(cfg, retr, "max_tunnel_hops")
     _apply_if_present(cfg, retr, "max_tunnel_hits")
     _apply_if_present(cfg, retr, "always_run_l3", None, bool)
+    _apply_if_present(cfg, retr, "dynamics_enabled", None, bool)
 
     perf = g("performance")
     _apply_if_present(cfg, perf, "background_ingest")
@@ -418,6 +425,7 @@ def _apply_plugin_sections(cfg: MemPalaceConfig, plugin_config: Dict[str, Any]) 
         "wake_up_on_first_turn", "l2_before_deep_search",
         "l2_skip_deep_search_when_recall_non_empty",
         "graph_enabled", "graph_find_tunnels",
+        "dynamics_enabled",
     )
     for key in flat_bools:
         if key in plugin_config:

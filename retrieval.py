@@ -427,6 +427,7 @@ class MemPalaceRetrieval:
             "ingestion_skips": 0,
             "ingestion_dup_skips": 0,
             "ingestion_errors": 0,
+            "dynamics_potentiations": 0,
         }
 
     # ----------------------------------------------------------------
@@ -589,8 +590,15 @@ class MemPalaceRetrieval:
         # Sort: score primary, recency tiebreaker. When prioritize_recent_days
         # is set, hits with created_at within the window get a small additive
         # score boost so fresh memories win ties with ancient ones.
+        #
+        # When the plugin's MemPalaceAPI has connection (hall/tunnel) dynamics
+        # available, also look up the live strength of the connection from the
+        # active wing → hit's wing and add a smaller proportional boost. This
+        # is the "Hebbian" path: connections the user has been actively
+        # reinforcing surface more strongly. Failures here are silent — we
+        # never block the recall on a connection lookup.
         recency_window = self._config.prioritize_recent_days
-        if recency_window > 0:
+        if recency_window > 0 or self._connection_strength_boost_available():
             from datetime import datetime, timezone
 
             now = datetime.now(timezone.utc)
@@ -610,8 +618,19 @@ class MemPalaceRetrieval:
                 # Linear ramp: 0.10 boost at age=0, 0.0 at age=window
                 return 0.10 * (1.0 - age_days / recency_window)
 
+            # Pre-compute connection boosts once (lookup is O(halls+tunnels))
+            conn_boosts = self._compute_connection_boosts(deduped) if self._connection_strength_boost_available() else {}
+
+            def _combined_boost(h: Dict[str, Any]) -> float:
+                recency = _recency_boost(h) if recency_window > 0 else 0.0
+                # Normalize connection boost: scale 0.05..5.0 strength → 0..0.05 additive.
+                # Keeps connection effects smaller than recency so age still matters.
+                key = (h.get("wing") or "", h.get("room") or "")
+                cb = conn_boosts.get(key, 0.0)
+                return recency + min(0.05, cb / 100.0)
+
             deduped.sort(
-                key=lambda h: (h.get("score", 0) + _recency_boost(h), str(h.get("date") or "")),
+                key=lambda h: (h.get("score", 0) + _combined_boost(h), str(h.get("date") or "")),
                 reverse=True,
             )
         else:
@@ -624,6 +643,21 @@ class MemPalaceRetrieval:
 
         if recall_block:
             self._cache.set(key, recall_block)
+
+        # Hebbian reinforcement: every successful recall strengthens the
+        # connections that surfaced the hits. Best-effort — any failure
+        # is logged and skipped, never raised (we never break the recall
+        # path on a connection write). Skip if all hits were weak-omitted
+        # (nothing meaningful was surfaced).
+        if recall_block and deduped:
+            try:
+                updated = self.potentiate_used_connections(deduped)
+                if updated:
+                    self._diag["dynamics_potentiations"] = (
+                        self._diag.get("dynamics_potentiations", 0) + updated
+                    )
+            except Exception as e:
+                logger.debug("[MemPalaceRetrieval] dynamics reinforcement failed: %s", e)
 
         return recall_block
 
@@ -1098,8 +1132,205 @@ class MemPalaceRetrieval:
                 "use_kg": self._config.use_kg,
                 "prefer_active_project": self._config.prefer_active_project,
                 "memory_stack_enabled": self._config.memory_stack_enabled,
+                "dynamics_enabled": self._config.dynamics_enabled,
             },
         }
+
+    # ----------------------------------------------------------------
+    # Connection-strength boost (Hebbian path via MemPalace dynamics)
+    # ----------------------------------------------------------------
+
+    def _connection_strength_boost_available(self) -> bool:
+        """True iff the underlying api has halls/tunnels persistence loaded
+        and the config flag is on. Fail-closed: any missing piece returns False.
+        """
+        if not getattr(self._config, "dynamics_enabled", True):
+            return False
+        api = self._api
+        if api is None:
+            return False
+        if not (getattr(api, "_load_tunnels_fn", None) or getattr(api, "_load_halls_fn", None)):
+            return False
+        return True
+
+    def _compute_connection_boosts(
+        self, hits: List[Dict[str, Any]]
+    ) -> Dict[tuple, float]:
+        """Return a map of (wing, room) → connection strength for each hit.
+
+        Looks at halls (in same wing as the hit) and tunnels (touched the
+        hit's wing). The maximum strength wins, so a strong tunnel always
+        promotes the hit regardless of any weaker halls also touching the
+        wing. The active wing (if known) is preferred for tunnel matching;
+        we boost the tunnel that connects active → hit.wing.
+        """
+        if not hits:
+            return {}
+        api = self._api
+        try:
+            api._ensure_imported()
+        except Exception:
+            return {}
+        active_wing = (
+            self._config.wake_up_wing
+            or self._config.target_wing
+            or ""
+        )
+        # Collect candidate wings from the hits.
+        target_wings = {h.get("wing") for h in hits if h.get("wing")}
+        if not target_wings:
+            return {}
+
+        out: Dict[tuple, float] = {}
+        # --- Tunnels ---
+        load_tunnels = getattr(api, "_load_tunnels_fn", None)
+        if load_tunnels:
+            try:
+                tunnels = list(load_tunnels() or [])
+            except Exception as e:
+                logger.debug("[MemPalaceRetrieval] load_tunnels failed: %s", e)
+                tunnels = []
+            for t in tunnels:
+                src = (
+                    (t.get("source") or {}).get("wing")
+                    if isinstance(t.get("source"), dict)
+                    else t.get("source_wing")
+                )
+                tgt = (
+                    (t.get("target") or {}).get("wing")
+                    if isinstance(t.get("target"), dict)
+                    else t.get("target_wing")
+                )
+                # Boost when the tunnel touches the active wing AND a hit wing
+                if active_wing and (active_wing in (src, tgt)):
+                    for hit_wing in target_wings:
+                        if hit_wing in (src, tgt) and hit_wing != active_wing:
+                            key = (hit_wing, "")
+                            cur = out.get(key, 0.0)
+                            strength = float(t.get("strength", 0.0))
+                            if strength > cur:
+                                out[key] = strength
+                # Also boost any hit wing connected to ANY other hit wing
+                elif not active_wing and src and tgt and src in target_wings and tgt in target_wings:
+                    for hit_wing in (src, tgt):
+                        key = (hit_wing, "")
+                        cur = out.get(key, 0.0)
+                        strength = float(t.get("strength", 0.0))
+                        if strength > cur:
+                            out[key] = strength
+
+        # --- Halls (single-wing: contribute to all rooms in that wing) ---
+        load_halls = getattr(api, "_load_halls_fn", None)
+        if load_halls:
+            try:
+                halls = list(load_halls() or [])
+            except Exception as e:
+                logger.debug("[MemPalaceRetrieval] load_halls failed: %s", e)
+                halls = []
+            for h in halls:
+                h_wing = h.get("wing")
+                if h_wing not in target_wings:
+                    continue
+                # Hall strength boosts the (wing, "") aggregate. Rooms in
+                # the same wing get the same boost (we don't track per-room
+                # entity pairs here — that's a future enhancement).
+                key = (h_wing, "")
+                cur = out.get(key, 0.0)
+                strength = float(h.get("strength", 0.0))
+                if strength > cur:
+                    out[key] = strength
+
+        # Also allow room-level keys to inherit the wing-level boost.
+        for hit in hits:
+            wing = hit.get("wing") or ""
+            room = hit.get("room") or ""
+            if not wing:
+                continue
+            wing_key = (wing, "")
+            if wing_key in out:
+                out[(wing, room)] = max(out.get((wing, room), 0.0), out[wing_key])
+        return out
+
+    def potentiate_used_connections(self, hits: List[Dict[str, Any]]) -> int:
+        """Hebbian reinforcement: every hit the user just saw strengthens
+        the connection that surfaced it. Called after a successful prefetch
+        (cache hit or fresh fetch) so that frequently-accessed connections
+        naturally rise to the top.
+
+        Returns the count of connections that were actually updated. Best-effort:
+        any failure is logged and skipped, never raised.
+        """
+        if not getattr(self._config, "dynamics_enabled", True):
+            return 0
+        if not hits:
+            return 0
+        api = self._api
+        if api is None or getattr(api, "potentiate", None) is None:
+            return 0
+        active_wing = (
+            self._config.wake_up_wing
+            or self._config.target_wing
+            or ""
+        )
+        # Collect unique (wing, room) keys touched
+        keys: Set[tuple] = set()
+        for h in hits:
+            wing = h.get("wing") or ""
+            room = h.get("room") or ""
+            if wing:
+                keys.add((wing, room))
+        # Also include the active wing's outgoing tunnels for any hit wing
+        if active_wing:
+            for h in hits:
+                if h.get("wing") and h["wing"] != active_wing:
+                    keys.add((active_wing, h["wing"]))
+        # Look up the relevant connection IDs from the loaded stores.
+        load_tunnels = getattr(api, "_load_tunnels_fn", None)
+        load_halls = getattr(api, "_load_halls_fn", None)
+        updated = 0
+        # Tunnel IDs that touch a hit wing
+        if load_tunnels:
+            try:
+                tunnels = list(load_tunnels() or [])
+            except Exception:
+                tunnels = []
+            hit_wings = {h.get("wing") for h in hits if h.get("wing")}
+            for t in tunnels:
+                src = (
+                    (t.get("source") or {}).get("wing")
+                    if isinstance(t.get("source"), dict)
+                    else t.get("source_wing")
+                )
+                tgt = (
+                    (t.get("target") or {}).get("wing")
+                    if isinstance(t.get("target"), dict)
+                    else t.get("target_wing")
+                )
+                if active_wing and (active_wing in (src, tgt)) and any(
+                    w in (src, tgt) and w != active_wing for w in hit_wings
+                ):
+                    try:
+                        r = api.potentiate(t["id"], "tunnel", 0.05)
+                        if r.get("success"):
+                            updated += 1
+                    except Exception as e:
+                        logger.debug("[MemPalaceRetrieval] potentiate tunnel %s failed: %s", t.get("id"), e)
+        # Hall IDs for hit wings
+        if load_halls:
+            try:
+                halls = list(load_halls() or [])
+            except Exception:
+                halls = []
+            hit_wings = {h.get("wing") for h in hits if h.get("wing")}
+            for h in halls:
+                if h.get("wing") in hit_wings:
+                    try:
+                        r = api.potentiate(h["id"], "hall", 0.05)
+                        if r.get("success"):
+                            updated += 1
+                    except Exception as e:
+                        logger.debug("[MemPalaceRetrieval] potentiate hall %s failed: %s", h.get("id"), e)
+        return updated
 
     def _record_ingestion(
         self,

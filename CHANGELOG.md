@@ -1,5 +1,74 @@
 # Changelog
 
+## 1.5.3 (2026-06-02)
+
+### MemPalace dynamics integration (Hebb + Ebbinghaus + Cepeda)
+
+Wires the real `mempalace.dynamics` module into both the plugin's tool
+surface and its retrieval sort key. Replaces the hand-rolled recency boost
+from v1.5.1 with the production dynamics math (research-grounded: Hebb 1949,
+Ebbinghaus 1885, Cepeda 2006) and adds a Hebbian reinforcement path so
+frequently-accessed connections naturally rise to the top.
+
+### New tools
+
+- **`mempalace_dynamics_apply`** — Ebbinghaus exponential decay across all
+  hall and tunnel connections in one call. Returns aggregate stats:
+  `count`, `mean_strength_before`, `mean_strength_after`, `halls_touched`,
+  `tunnels_touched`, `now`. Optional `wing` filter only touches that wing's
+  halls + tunnels whose source or target is that wing. Optional `now`
+  ISO-8601 timestamp for deterministic decay (testing).
+- **`mempalace_potentiate`** — Hebbian reinforcement of a single connection
+  by ID. Updates `strength` (capped at MAX_STRENGTH=5.0), `last_activated`,
+  `access_count`. Grows `stability` if the gap since prior activation is
+  at least 1 hour (the Cepeda spacing effect — rapid bursts don't build
+  durability). Returns the full updated record.
+
+### Retrieval integration
+
+- New `retrieval.dynamics_enabled` config flag (default **true**) — fail-closed
+  helper `_connection_strength_boost_available()` checks the flag plus live
+  persistence helpers before enabling.
+- New `_compute_connection_boosts(hits)` method on `MemPalaceRetrieval` that
+  looks up the live `strength` of every hall/tunnel touching a hit's wing
+  and returns a `(wing, room) → boost` map. Combined with the recency boost
+  in the sort key — keeps connection effects smaller than recency so age
+  still matters.
+- New `potentiate_used_connections(hits)` method that, after every
+  successful prefetch, calls `potentiate()` on the connections that surfaced
+  the hits. Wired into `_fetch_with_timeout` right after the recall block
+  is cached; failures are logged and skipped (never breaks the recall path).
+- New `dynamics_potentiations` counter in the staged-pipeline diagnostics
+  so operators can see how often Hebbian reinforcement fires per session.
+
+### Internal
+
+- `MemPalaceAPI` now lazy-imports `mempalace.dynamics` (apply_decay,
+  potentiate, initialize_dynamics_fields) and the halls + tunnels
+  persistence helpers (`_load_hallways`, `_save_hallways`,
+  `_load_tunnels`, `_save_tunnels`) in `_ensure_imported()`. All wrapped in
+  try/except so a missing module is a graceful no-op, not a hard failure.
+- `diagnostics()["config"]` now exposes `dynamics_enabled` for operator
+  visibility.
+
+### Live verification (2026-06-02)
+
+- `py_compile`: clean on all 6 modules.
+- `pytest`: 111 passed, 5 skipped (no regressions; FakeConfig gained the
+  new field).
+- Unit tests in `/tmp/dynamics_tests.py` cover both new methods + the
+  retrieval-side helper. All 6 pass.
+- **Hebbian reinforcement verified end-to-end against the live palace**:
+  created a test tunnel `memory/conversations → hermes_sessions/ml-inference`
+  (initial `strength=1.0, access_count=0`), ran a prefetch with
+  `target_wing=memory`, observed `strength: 1.0 → 1.05 (+0.05)` and
+  `access_count: 0 → 1 (+1)`. The `dynamics_potentiations` counter
+  incremented to 1. Test tunnel deleted after measurement.
+- Live recall smoke (8-query battery) — no regression in v1.5.2 numbers;
+  the dynamics path is passive in the current palace because none of the
+  test query wings are touched by existing halls/tunnels. The wiring is
+  active and will fire as soon as matching graph data exists.
+
 ## 1.5.2 (2026-06-02)
 
 ### Default-on winners from the disabled-feature audit

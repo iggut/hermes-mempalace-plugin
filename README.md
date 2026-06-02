@@ -32,7 +32,8 @@ mempalace/
 | Holographic mirroring | disabled | Optional overlay, disabled by default. |
 | Duplicate safety | enabled for direct drawer writes | `add_drawer()` checks MemPalace for near-duplicates before writing and returns the existing drawer ID on a hit. |
 | Lexical fallback | enabled for search | If semantic search misses or has spare result slots, exact drawer IDs and skill/source-file name variants are matched deterministically. |
-| Memory stack (L0–L3) | disabled | Optional `mempalace.layers.MemoryStack`: bounded `wake_up()` (L0+L1) on session or first turn; L2 `recall()` when wing/room are known; L3 remains `prefetch()` hybrid search. |
+| Memory stack (L0–L3) | enabled by default since v1.5.2 | Real `mempalace.layers.MemoryStack`: bounded `wake_up()` (L0+L1) on session start; L2 `recall()` when wing/room are known; L3 corpus-wide hybrid search runs alongside L2. |
+| Living connections (dynamics) | enabled by default since v1.5.3 | Real `mempalace.dynamics` (Hebb + Ebbinghaus + Cepeda): connection `strength` boosts the sort key; every successful recall potentiates the connections that surfaced its hits. Admin tools: `mempalace_dynamics_apply`, `mempalace_potentiate`. |
 | KG-assisted recall | disabled | `include_kg_facts: true` extracts entity hints from queries and appends knowledge graph triples to prefetch. |
 | Graph-assisted prefetch | disabled | `graph.enabled: true` uses `palace_graph.traverse` / `find_tunnels` to surface connected rooms in prefetch. |
 | Agent diary | disabled | `diary.enabled: true` writes session summaries on end, reads recent entries on start. |
@@ -81,6 +82,7 @@ See `CONFIG_SCHEMA.md` for the full schema. Safe defaults prioritize recall with
 | `ingestion.mode` | `none` | `each_turn`, `session_end`, or `none`. |
 | `retrieval.enabled` | `true` | Search MemPalace before model calls. |
 | `retrieval.always_run_l3` | `true` | Always run corpus-wide L3 search alongside L2. (See [Feature Audit](#feature-audit--recommended-defaults).) |
+| `retrieval.dynamics_enabled` | `true` | Wire real MemPalace connection dynamics into the sort key + Hebbian reinforcement. (See [Living Connections](#living-connections-v153).) |
 | `memory_stack.enabled` | `true` | Use real MemPalace `MemoryStack` for L0+L1 wake and L2 scoped recall. |
 | `memory_stack.wake_up_on_session_start` | `true` | Load L0 identity + L1 essentials at session start. |
 | `retrieval.timeout_ms` | `500` | Hard budget for synchronous fallback retrieval. |
@@ -239,6 +241,73 @@ mempalace_memory:
 That's the full set of recommended flips. Leave everything else at
 defaults unless you have a specific need documented above.
 
+## Living Connections (v1.5.3+)
+
+This plugin wires MemPalace's real connection dynamics into the retrieval
+pipeline. Two new tools expose the math; the retrieval path uses it
+automatically.
+
+### The math
+
+Research-grounded in `mempalace/dynamics.py` (Hebb 1949, Ebbinghaus 1885,
+Cepeda 2006):
+
+- **Hebbian potentiation** — when a connection is used, it gets stronger.
+  `strength` grows by `POTENTIATION_INCREMENT` (0.05) per co-access, capped
+  at `MAX_STRENGTH` (5.0). Tuned so ~20 co-accesses bring a fresh connection
+  to max.
+- **Ebbinghaus exponential decay** — unused connections fade with time
+  since last activation. `new = old * exp(-days_since_last / stability)`,
+  floored at `STRENGTH_FLOOR` (0.05). The palace doesn't forget, salience
+  just drops.
+- **Cepeda spacing effect** — stability grows by `STABILITY_INCREMENT` (0.1)
+  only when the gap since the prior activation is at least
+  `SPACED_INTERVAL_HOURS` (1.0). Bursts of rapid co-access don't build
+  durability; distributed practice does.
+
+### New tools
+
+- **`mempalace_dynamics_apply`** — Ebbinghaus decay across all halls and
+  tunnels. Returns `{count, mean_strength_before, mean_strength_after,
+  halls_touched, tunnels_touched, now}`. Optional `wing` filter and `now`
+  ISO-8601 timestamp. Pure admin operation — call periodically (daily cron
+  is a good default).
+- **`mempalace_potentiate`** — Hebbian reinforcement of a single connection
+  by ID. Returns the full updated record. Use `kind: 'hall' | 'tunnel'`.
+
+### Automatic integration
+
+When `retrieval.dynamics_enabled: true` (default), every successful prefetch:
+
+1. Looks up the live `strength` of every hall/tunnel touching a hit's wing
+   and adds a small additive boost to the sort key (capped at 0.05, so age
+   still matters more than reinforcement).
+2. Calls `potentiate()` on the connections that surfaced the hits
+   (Hebbian reinforcement). The `dynamics_potentiations` counter in
+   diagnostics tracks how often this fires.
+
+The hand-rolled recency boost from v1.5.1 is still active in parallel —
+dynamics effects are smaller than recency effects, so the user's age
+preference is preserved.
+
+### Cron suggestion
+
+For long-running installs:
+
+```bash
+# Apply Ebbinghaus decay to all connections once per day
+0 3 * * * hermes mcp call mempalace_dynamics_apply '{}' >/dev/null 2>&1
+```
+
+### Verified end-to-end
+
+Live test (2026-06-02, against `~/.mempalace/palace`): created a test
+tunnel `memory/conversations → hermes_sessions/ml-inference` (initial
+`strength=1.0, access_count=0`), ran a prefetch with `target_wing=memory`,
+observed `strength: 1.0 → 1.05 (+0.05)` and `access_count: 0 → 1 (+1)`. The
+`dynamics_potentiations` counter incremented to 1. Test tunnel deleted
+after measurement.
+
 ## Two Surfaces: MemoryProvider vs MCP
 
 The MemPalace memory plugin provides two integration surfaces:
@@ -258,6 +327,8 @@ The MemPalace memory plugin provides two integration surfaces:
 | `on_pre_compress()` | (none) | Provider extracts facts before compression |
 | (none) | `mempalace_traverse` | MCP-only graph traversal; provider uses `graph.enabled` config |
 | (none) | `mempalace_create_tunnel` | MCP-only explicit tunnel creation |
+| (none) | `mempalace_dynamics_apply` | Admin: Ebbinghaus decay across all halls + tunnels. (See [Living Connections](#living-connections-v153).) |
+| (none) | `mempalace_potentiate` | Hebbian reinforcement of a single hall or tunnel by ID. |
 | (none) | `mempalace_diary_write` / `mempalace_diary_read` | Provider has `diary.enabled`; MCP is always available |
 | (none) | `mempalace_compress` | MCP-only AAAK compression CLI; provider has `aaak.enabled` |
 

@@ -57,6 +57,11 @@ class FakeConfig:
         # Legacy flags for backward compat
         self.include_kg_facts = False
         self.graph_enabled = False
+        # Dynamics (v1.5.3) — added when wiring MemPalace dynamics into
+        # the sort key + Hebbian reinforcement.
+        self.dynamics_enabled = False  # False in tests by default; the
+        # connection-strength boost path uses _connection_strength_boost_available()
+        # which checks for both the flag and live persistence helpers.
         for k, v in kw.items():
             setattr(self, k, v)
 
