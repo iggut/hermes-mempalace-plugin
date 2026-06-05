@@ -384,6 +384,14 @@ class MemPalaceMemoryProvider(_MemoryProvider):
 
         combined = combined[: self._config.max_turn_length]
 
+        # Strip system noise (hook output, UI chrome, system tags) before ingestion.
+        # Line-anchored patterns — user prose mentioning these strings inline is safe.
+        if self._config.normalize_content and self._mp_api:
+            try:
+                combined = self._mp_api.strip_noise(combined)
+            except Exception:
+                pass  # fail-open: ingest raw content if strip fails
+
         def _ingest():
             self._metric("ingest_attempts")
             try:
@@ -539,6 +547,12 @@ class MemPalaceMemoryProvider(_MemoryProvider):
 
         self._ensure_api()
         combined = f"Delegated task: {task}\nResult: {result}"[: self._config.max_turn_length]
+
+        if self._config.normalize_content and self._mp_api:
+            try:
+                combined = self._mp_api.strip_noise(combined)
+            except Exception:
+                pass
 
         def _ingest():
             self._metric("ingest_attempts")

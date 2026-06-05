@@ -91,6 +91,9 @@ class MemPalaceConfig:
     target_wing: str = "memory"
     target_room: str = "conversations"
     agent_name: str = "jupiter"
+    # Strip system tags, hook output, and UI chrome before ingestion.
+    # Uses mempalace.normalize.strip_noise — line-anchored, verbatim-safe.
+    normalize_content: bool = True
 
     # Fact extraction (off by default)
     extract_facts_each_turn: bool = False
@@ -98,6 +101,9 @@ class MemPalaceConfig:
     min_confidence: float = 0.7
     max_facts_per_turn: int = 10
     allowed_predicates: List[str] = field(default_factory=list)
+
+    # Entity detector mode (off by default)
+    fact_extraction_entity_detector: bool = False
 
     # Retrieval (on by default)
     retrieval_enabled: bool = True
@@ -261,7 +267,7 @@ def _finalize_config(cfg: MemPalaceConfig) -> MemPalaceConfig:
     )
     cfg.duplicate_threshold = _clamp_float(cfg.duplicate_threshold, 0.0, 1.0, 0.9)
 
-    if cfg.fact_extraction_mode not in {"none", "regex", "schema"}:
+    if cfg.fact_extraction_mode not in {"none", "regex", "schema", "entity_detector"}:
         cfg.fact_extraction_mode = "schema"
 
     if not cfg.palace_data_dir and os.environ.get("HOME"):
@@ -319,6 +325,7 @@ def _apply_plugin_sections(cfg: MemPalaceConfig, plugin_config: Dict[str, Any]) 
     _apply_if_present(cfg, ing, "wing", "target_wing")
     _apply_if_present(cfg, ing, "room", "target_room")
     _apply_if_present(cfg, ing, "agent", "agent_name")
+    _apply_if_present(cfg, ing, "normalize_content", "normalize_content", bool)
 
     facts = g("facts")
     _apply_if_present(cfg, facts, "extract_each_turn", "extract_facts_each_turn", bool)
@@ -326,6 +333,7 @@ def _apply_plugin_sections(cfg: MemPalaceConfig, plugin_config: Dict[str, Any]) 
     _apply_if_present(cfg, facts, "max_facts_per_turn")
     _apply_if_present(cfg, facts, "extraction_mode", "fact_extraction_mode")
     _apply_if_present(cfg, facts, "allowed_predicates")
+    _apply_if_present(cfg, facts, "use_entity_detector", "fact_extraction_entity_detector", bool)
 
     retr = g("retrieval")
     _apply_if_present(cfg, retr, "enabled", "retrieval_enabled", bool)
@@ -426,6 +434,8 @@ def _apply_plugin_sections(cfg: MemPalaceConfig, plugin_config: Dict[str, Any]) 
         "l2_skip_deep_search_when_recall_non_empty",
         "graph_enabled", "graph_find_tunnels",
         "dynamics_enabled",
+        "fact_extraction_entity_detector",
+        "normalize_content",
     )
     for key in flat_bools:
         if key in plugin_config:

@@ -124,7 +124,7 @@ Expected:
 - [x] Forward configured or session-derived `wing` / `room` on every search call.
 - [x] Optional graph-assisted prefetch: `palace_graph.traverse` / `find_tunnels` behind a flag; strict hop/result limits.
 - [x] Document halls (`hall_facts`, `hall_events`, …) vs miner metadata; note `mempalace init` / `mine` for hall-rich corpora.
-- [ ] Document MCP-only tunnel tools unless product requires tunnel-aware recall in Hermes-only mode.
+- [x] Document MCP-only tunnel tools unless product requires tunnel-aware recall in Hermes-only mode.
 
 ## Phase 10: Knowledge graph in recall and contradiction follow-up
 
@@ -158,7 +158,7 @@ Expected:
 - [x] Expand README “two surfaces”: MemoryProvider vs 29 MCP tools.
 - [x] Maintainer parity matrix: provider methods ↔ MCP tool names.
 - [x] Verify duplicate-check before `add_drawer` / `chunk_and_add` when MemPalace duplicate API is wired.
-- [ ] Document `mempalace_reconnect` when CLI and Hermes share a palace.
+- [x] Document `mempalace_reconnect` when CLI and Hermes share a palace.
 
 ## Phase 14: CLI operator workflow
 
@@ -178,7 +178,7 @@ Expected:
 
 - [x] Surface `diagnostics()` / effective config via `hermes memory status` or doc until upstream seam exists.
 - [x] Optional integration test: real `mempalace` + fixture palace (skipped by default).
-- [ ] Load/concurrency: prefetch latency, thread join budget.
+- [x] Load/concurrency: prefetch latency, thread join budget. (12 tests in tests/test_load_concurrency.py)
 - [x] `plugin.yaml` version/description; optional `CHANGELOG.md` / README release notes.
 
 ### Execution order (Phases 7–16)
@@ -204,6 +204,28 @@ Expected:
 | API reference | https://mempalaceofficial.com/reference/api-reference.html |
 | MCP tools | https://mempalaceofficial.com/reference/mcp-tools.html |
 | CLI | https://mempalaceofficial.com/reference/cli.html |
+
+## Phase 17: Repair, export, dedup tools
+
+- [x] Implement `mempalace_repair_scan` — scan palace for corruption/inconsistencies.
+- [x] Implement `mempalace_repair_prune` — remove corrupt/orphaned drawers (dry-run default).
+- [x] Implement `mempalace_export` — export palace to markdown or JSON.
+- [x] Implement `mempalace_dedup_stats` — show deduplication statistics.
+- [x] Implement `mempalace_dedup_run` — run deduplication with configurable threshold (dry-run default).
+
+## Phase 18: Entity detection integration
+
+- [x] Implement `mempalace_detect_entities` — detect entities in text using official entity detector (COCA filter, scoring, classification).
+- [x] Add `fact_extraction_mode: "entity_detector"` option using `mempalace.entity_detector` module.
+- [x] Wire `facts.use_entity_detector` config flag as alternative to regex-based extractor.
+
+## Phase 19: Transcript normalization
+
+- [x] Wire `mempalace.normalize.strip_noise` into `sync_turn()` and `on_delegation()` ingestion paths.
+- [x] Add `normalize_content: bool = True` config flag (default ON — noise removal is always beneficial).
+- [x] Added `MemPalaceAPI.strip_noise()` method — lazy-imports from `mempalace.normalize`, fail-open.
+- [x] Config wiring: `ingestion.normalize_content` nested key + flat `normalize_content` bool.
+- [ ] Audio transcript normalization pipeline — defer until upstream provides a stable transcript format API.
 
 ## Deferred improvements
 

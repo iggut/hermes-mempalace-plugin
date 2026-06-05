@@ -197,7 +197,7 @@ def _token_in_content(token_type: str, tokens: Dict[str, Set[str]], content_lowe
     return False
 
 
-def _classify_evidence(query: str, hit: Dict[str, Any]) -> str:
+def _classify_evidence(query: str, hit: Dict[str, Any], score_floor: float = 0.5) -> str:
     """Classify a hit as strong/medium/weak based on lexical + score.
 
     A hit is STRONG only when:
@@ -207,15 +207,24 @@ def _classify_evidence(query: str, hit: Dict[str, Any]) -> str:
       3. The query contains NO high-specificity tokens
          AND at least one extracted token (any type, including identifiers) appears
          in the content, OR
-      4. Score >= 0.75 (fallback when no token matches, NON-EMPTY QUERY ONLY)
+      4. Score >= 0.75 (fallback when no token match, NON-EMPTY QUERY ONLY)
 
-    A hit is MEDIUM when score >= 0.50 but no token match.
+    A hit is MEDIUM when score >= max(score_floor, 0.40) but no token match.
+    ``score_floor`` adapts per query: strict queries keep 0.50, vague NL
+    queries use the relaxed floor (e.g. 0.30) so hits that passed the
+    search-API floor aren't all discarded as weak.
     A hit is WEAK otherwise.
     """
     content_lower = (hit.get("content") or "").lower()
     q = query.lower()
 
-    # Exact query substring match (skip empty query to avoid "" matching everything)
+    # Adaptive medium threshold: use the higher of the query's score floor
+    # and a hard minimum of 0.35.  This ensures vague NL queries (floor 0.30)
+    # that surface real ChromaDB hits at 0.31-0.37 aren't all dropped as weak,
+    # while strict queries (floor 0.50) keep their existing 0.50 threshold.
+    medium_threshold = max(score_floor, 0.35)
+
+    # Exact query substring match (skip empty query to avoid " " matching everything)
     if q and q in content_lower:
         return "strong"
 
@@ -236,7 +245,7 @@ def _classify_evidence(query: str, hit: Dict[str, Any]) -> str:
         score = hit.get("score", 0)
         if score >= 0.75:
             return "strong"
-        if score >= 0.50:
+        if score >= medium_threshold:
             return "medium"
         return "weak"
 
@@ -250,7 +259,7 @@ def _classify_evidence(query: str, hit: Dict[str, Any]) -> str:
     # match and should not claim strong evidence based on score alone.
     if q and score >= 0.75:
         return "strong"
-    if score >= 0.50:
+    if score >= medium_threshold:
         return "medium"
     return "weak"
 
@@ -260,8 +269,9 @@ def _score_is_strong(score: float) -> bool:
     return score >= 0.75
 
 
-def _score_is_medium(score: float) -> bool:
-    return score >= 0.50
+def _score_is_medium(score: float, floor: float = 0.5) -> bool:
+    """Medium threshold adapts to the query's score floor."""
+    return score >= max(floor, 0.35)
 
 
 # ----------------------------------------------------------------
@@ -570,8 +580,9 @@ class MemPalaceRetrieval:
 
         # L3: full hybrid search — ONLY if L2 found nothing strong/medium
         # and always_run_l3 is False (default). This saves latency + tokens.
+        l2_floor = self._score_floor_for(query)
         l2_has_signal = any(
-            _classify_evidence(query, h) in ("strong", "medium")
+            _classify_evidence(query, h, score_floor=l2_floor) in ("strong", "medium")
             for h in l2_hits
         )
         if not l2_has_signal or self._config.always_run_l3:
@@ -1018,8 +1029,11 @@ class MemPalaceRetrieval:
         # strong/medium hits must still surface at least the best medium hit,
         # otherwise the model gets no context at all.
         classified: List[tuple] = []  # (evidence, hit) — preserves order
+        # Use per-query score floor so vague NL queries don't classify
+        # all hits as weak (see _classify_evidence adaptive threshold).
+        evidence_floor = self._score_floor_for(query)
         for hit in hits:
-            evidence = _classify_evidence(query, hit)
+            evidence = _classify_evidence(query, hit, score_floor=evidence_floor)
             classified.append((evidence, hit))
 
         has_strong_or_medium = any(ev in ("strong", "medium") for ev, _ in classified)

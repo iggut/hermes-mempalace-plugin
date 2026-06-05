@@ -113,11 +113,19 @@ class SchemaValidatedFactExtractor:
             mode: "schema" (strict) or "regex" (lenient)
             allowed_predicates: Optional predicate allowlist
 
+        Supported modes: "schema", "regex", "entity_detector".
+
         Returns:
             List of validated fact dicts
         """
         if not text or len(text) < 10:
             return []
+
+        # entity_detector mode: delegate to the dedicated classmethod early
+        if mode == "entity_detector":
+            return cls.extract_facts_entity_detector(
+                text, max_facts=max_facts, min_confidence=min_confidence,
+            )
 
         entities = cls._find_entities(text)
         facts = []
@@ -186,6 +194,67 @@ class SchemaValidatedFactExtractor:
                     )
                     if fact.validate() and fact.confidence >= min_confidence:
                         facts.append(fact.to_dict())
+
+        return facts[:max_facts]
+
+    @classmethod
+    def extract_facts_entity_detector(
+        cls,
+        text: str,
+        max_facts: int = 10,
+        min_confidence: float = 0.7,
+        languages: tuple = ("en",),
+    ) -> List[Dict[str, Any]]:
+        """Extract facts using mempalace.entity_detector.detect_entities.
+
+        Writes *text* to a temp file, passes it through the full
+        entity-detection pipeline, and converts each detected entity
+        into a FactSchema-compatible dict (``subject=entity_name,
+        predicate='is_mentioned', object_=entity_type``).
+
+        Returns an empty list if the mempalace package is not installed.
+        """
+        try:
+            from mempalace.entity_detector import detect_entities  # type: ignore[import-untyped]
+        except Exception:
+            return []
+
+        import tempfile, os  # noqa: E401
+
+        facts: List[Dict[str, Any]] = []
+        tmp_path = None
+        try:
+            fd, tmp_path = tempfile.mkstemp(suffix=".txt")
+            os.close(fd)
+            with open(tmp_path, "w", encoding="utf-8") as fh:
+                fh.write(text)
+
+            detected = detect_entities([tmp_path], languages=languages)
+            for category in ("people", "projects", "topics", "uncertain"):
+                for ent in detected.get(category, []):
+                    name = ent.get("name", "")
+                    if not name or len(name) < 2:
+                        continue
+                    conf = float(ent.get("confidence", 0.5))
+                    if conf < min_confidence:
+                        continue
+                    fact = FactSchema(
+                        subject=name,
+                        predicate="is_mentioned",
+                        object_=ent.get("type", "entity") or "entity",
+                        confidence=conf,
+                        source="entity_detector",
+                    )
+                    if fact.validate():
+                        facts.append(fact.to_dict())
+        except Exception:
+            pass
+        finally:
+            if tmp_path and os.path.exists(tmp_path):
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
 
         return facts[:max_facts]
 

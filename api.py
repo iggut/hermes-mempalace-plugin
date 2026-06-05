@@ -429,6 +429,103 @@ class MemPalaceAPI:
                 "required": ["connection_id"],
             },
         },
+        {
+            "name": "mempalace_repair_scan",
+            "description": "Scan palace for corruption, inconsistencies, or missing metadata. Returns a diagnostic report.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "wing": {
+                        "type": "string",
+                        "description": "Limit scan to one wing (optional)",
+                    },
+                },
+            },
+        },
+        {
+            "name": "mempalace_repair_prune",
+            "description": "Remove corrupt or orphaned drawers from the palace. Returns count of pruned items.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "confirm": {
+                        "type": "boolean",
+                        "description": "Actually prune (default: dry-run preview)",
+                    },
+                },
+            },
+        },
+        {
+            "name": "mempalace_export",
+            "description": "Export palace data to markdown or JSON format. Returns the output directory path.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "output_dir": {
+                        "type": "string",
+                        "description": "Directory to write export files",
+                    },
+                    "format": {
+                        "type": "string",
+                        "description": "Export format: markdown or json (default: markdown)",
+                    },
+                },
+                "required": ["output_dir"],
+            },
+        },
+        {
+            "name": "mempalace_dedup_stats",
+            "description": "Show deduplication statistics — how many near-duplicate drawers exist in the palace.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "wing": {
+                        "type": "string",
+                        "description": "Limit to one wing (optional)",
+                    },
+                },
+            },
+        },
+        {
+            "name": "mempalace_dedup_run",
+            "description": "Run deduplication — merge or remove near-duplicate drawers. Returns count of duplicates found/removed.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "wing": {
+                        "type": "string",
+                        "description": "Limit to one wing (optional)",
+                    },
+                    "threshold": {
+                        "type": "number",
+                        "description": "Similarity threshold 0-1 (default 0.95)",
+                    },
+                    "dry_run": {
+                        "type": "boolean",
+                        "description": "Preview only (default true)",
+                    },
+                },
+            },
+        },
+        {
+            "name": "mempalace_detect_entities",
+            "description": "Detect entities (people, projects, organizations) in text using MemPalace entity detection.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "text": {
+                        "type": "string",
+                        "description": "Text to analyze for entities",
+                    },
+                    "languages": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Languages to detect (default: [en])",
+                    },
+                },
+                "required": ["text"],
+            },
+        },
     ]
 
     def __init__(
@@ -476,6 +573,14 @@ class MemPalaceAPI:
         self._save_halls_fn: Any = None
         self._load_tunnels_fn: Any = None
         self._save_tunnels_fn: Any = None
+
+        # Repair, export, dedup, entity detection — set by _ensure_imported.
+        self._repair_scan_fn: Any = None
+        self._repair_prune_fn: Any = None
+        self._export_palace_fn: Any = None
+        self._dedup_stats_fn: Any = None
+        self._dedup_run_fn: Any = None
+        self._detect_entities_fn: Any = None
 
         self._col: Any = None
         self._kg: Any = None
@@ -607,6 +712,42 @@ class MemPalaceAPI:
             self._save_tunnels_fn = _save_tunnels
         except Exception as e:
             logger.debug("[MemPalaceAPI] palace_graph persistence import failed: %s", e)
+
+        try:
+            from mempalace.repair import scan_palace as _repair_scan
+            self._repair_scan_fn = _repair_scan
+        except Exception as e:
+            logger.debug("[MemPalaceAPI] repair.scan_palace import failed: %s", e)
+
+        try:
+            from mempalace.repair import prune_corrupt as _repair_prune
+            self._repair_prune_fn = _repair_prune
+        except Exception as e:
+            logger.debug("[MemPalaceAPI] repair.prune_corrupt import failed: %s", e)
+
+        try:
+            from mempalace.exporter import export_palace as _export_palace
+            self._export_palace_fn = _export_palace
+        except Exception as e:
+            logger.debug("[MemPalaceAPI] exporter.export_palace import failed: %s", e)
+
+        try:
+            from mempalace.dedup import show_stats as _dedup_stats
+            self._dedup_stats_fn = _dedup_stats
+        except Exception as e:
+            logger.debug("[MemPalaceAPI] dedup.show_stats import failed: %s", e)
+
+        try:
+            from mempalace.dedup import dedup_palace as _dedup_run
+            self._dedup_run_fn = _dedup_run
+        except Exception as e:
+            logger.debug("[MemPalaceAPI] dedup.dedup_palace import failed: %s", e)
+
+        try:
+            from mempalace.entity_detector import detect_entities as _detect_entities
+            self._detect_entities_fn = _detect_entities
+        except Exception as e:
+            logger.debug("[MemPalaceAPI] entity_detector.detect_entities import failed: %s", e)
 
         self._imported = bool(self._get_collection_fn)
         if not self._imported:
@@ -1226,6 +1367,21 @@ class MemPalaceAPI:
             logger.debug("[MemPalaceAPI] dialect_compress failed: %s", e)
             return ""
 
+    def strip_noise(self, text: str) -> str:
+        """Remove system tags, hook output, and UI chrome from text.
+
+        Uses mempalace.normalize.strip_noise — line-anchored patterns that
+        preserve user prose mentioning these strings inline.
+        Returns text unchanged if the import fails.
+        """
+        self._ensure_imported()
+        try:
+            from mempalace.normalize import strip_noise as _strip
+            return _strip(text)
+        except Exception as e:
+            logger.debug("[MemPalaceAPI] strip_noise import failed: %s", e)
+            return text
+
     def wake_up_context(self, wing: str = "", char_budget: int = 3200) -> str:
         self._ensure_imported()
         try:
@@ -1454,6 +1610,12 @@ class MemPalaceAPI:
             "mempalace_reconnect": lambda a: self.tool_reconnect(),
             "mempalace_dynamics_apply": lambda a: self.dynamics_apply(a.get("wing"), a.get("now")),
             "mempalace_potentiate": lambda a: self.potentiate(a["connection_id"], a.get("kind", "tunnel"), a.get("increment", 0.05)),
+            "mempalace_repair_scan": lambda a: self.tool_repair_scan(a.get("wing")),
+            "mempalace_repair_prune": lambda a: self.tool_repair_prune(bool(a.get("confirm", False))),
+            "mempalace_export": lambda a: self.tool_export(a["output_dir"], a.get("format", "markdown")),
+            "mempalace_dedup_stats": lambda a: self.tool_dedup_stats(a.get("wing")),
+            "mempalace_dedup_run": lambda a: self.tool_dedup_run(a.get("wing"), a.get("threshold", 0.95), bool(a.get("dry_run", True))),
+            "mempalace_detect_entities": lambda a: self.tool_detect_entities(a["text"], a.get("languages")),
         }
         handler = dispatch.get(tool_name)
         if handler is None:
@@ -1995,6 +2157,80 @@ class MemPalaceAPI:
             return result
         except Exception as e:
             return {"success": False, "error": str(e)}
+
+    def tool_repair_scan(self, wing: Optional[str] = None) -> Dict[str, Any]:
+        self._ensure_imported()
+        if self._repair_scan_fn is None:
+            return {"error": "repair.scan_palace not available — mempalace.repair module could not be imported"}
+        try:
+            result = self._repair_scan_fn(palace_path=self._palace_data_dir, only_wing=wing)
+            if isinstance(result, dict):
+                return result
+            return {"result": result}
+        except Exception as e:
+            return {"error": f"repair scan failed: {e}"}
+
+    def tool_repair_prune(self, confirm: bool = False) -> Dict[str, Any]:
+        self._ensure_imported()
+        if self._repair_prune_fn is None:
+            return {"error": "repair.prune_corrupt not available — mempalace.repair module could not be imported"}
+        try:
+            result = self._repair_prune_fn(palace_path=self._palace_data_dir, confirm=confirm)
+            if isinstance(result, dict):
+                return result
+            return {"result": result}
+        except Exception as e:
+            return {"error": f"repair prune failed: {e}"}
+
+    def tool_export(self, output_dir: str, format: str = "markdown") -> Dict[str, Any]:
+        self._ensure_imported()
+        if self._export_palace_fn is None:
+            return {"error": "exporter.export_palace not available — mempalace.exporter module could not be imported"}
+        try:
+            result = self._export_palace_fn(palace_path=self._palace_data_dir, output_dir=output_dir, format=format)
+            if isinstance(result, dict):
+                return result
+            return {"result": result, "output_dir": output_dir}
+        except Exception as e:
+            return {"error": f"export failed: {e}"}
+
+    def tool_dedup_stats(self, wing: Optional[str] = None) -> Dict[str, Any]:
+        self._ensure_imported()
+        if self._dedup_stats_fn is None:
+            return {"error": "dedup.show_stats not available — mempalace.dedup module could not be imported"}
+        try:
+            result = self._dedup_stats_fn(palace_path=self._palace_data_dir)
+            if isinstance(result, dict):
+                return result
+            return {"result": result}
+        except Exception as e:
+            return {"error": f"dedup stats failed: {e}"}
+
+    def tool_dedup_run(self, wing: Optional[str] = None, threshold: float = 0.95, dry_run: bool = True) -> Dict[str, Any]:
+        self._ensure_imported()
+        if self._dedup_run_fn is None:
+            return {"error": "dedup.dedup_palace not available — mempalace.dedup module could not be imported"}
+        try:
+            result = self._dedup_run_fn(palace_path=self._palace_data_dir, threshold=threshold, dry_run=dry_run, wing=wing)
+            if not dry_run:
+                self._col = None
+            if isinstance(result, dict):
+                return result
+            return {"result": result}
+        except Exception as e:
+            return {"error": f"dedup run failed: {e}"}
+
+    def tool_detect_entities(self, text: str, languages: Optional[List[str]] = None) -> Dict[str, Any]:
+        self._ensure_imported()
+        if self._detect_entities_fn is None:
+            return {"error": "entity_detector.detect_entities not available — mempalace.entity_detector module could not be imported"}
+        try:
+            result = self._detect_entities_fn(text, languages=languages or ("en",))
+            if isinstance(result, dict):
+                return result
+            return {"result": result}
+        except Exception as e:
+            return {"error": f"detect entities failed: {e}"}
 
     def get_config_schema(self) -> List[Dict[str, Any]]:
         return [

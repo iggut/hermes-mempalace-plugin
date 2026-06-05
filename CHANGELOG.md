@@ -1,5 +1,71 @@
 # Changelog
 
+## 1.6.0 (2026-06-04)
+
+### New tools: repair, export, dedup, entity detection
+
+Six new native tools bridge the gap between the plugin and the official
+MemPalace package's repair, export, dedup, and entity detection modules.
+
+- **mempalace_repair_scan** — Scan palace for corruption, inconsistencies,
+  or missing metadata. Returns a diagnostic report.
+- **mempalace_repair_prune** — Remove corrupt or orphaned drawers.
+  Dry-run by default; pass confirm=true to actually prune.
+- **mempalace_export** — Export palace data to markdown or JSON format.
+- **mempalace_dedup_stats** — Show deduplication statistics.
+- **mempalace_dedup_run** — Run deduplication with configurable threshold.
+  Dry-run by default.
+- **mempalace_detect_entities** — Detect entities (people, projects,
+  organizations) in text using MemPalace's sophisticated entity detector
+  (COCA filter, scoring, classification).
+
+### Entity detection in fact extraction
+
+- New `fact_extraction_mode: "entity_detector"` option uses the official
+  `mempalace.entity_detector` module instead of the regex-based extractor.
+  Config: `facts.use_entity_detector: true` or `fact_extraction_mode: entity_detector`.
+- The entity detector provides COCA word frequency filtering, multi-language
+  support, and confidence scoring — much more accurate than the regex fallback.
+
+### Retrieval tuning
+
+- `_classify_evidence` now uses an adaptive medium threshold
+  (`max(score_floor, 0.35)`) so vague NL queries that surface ChromaDB
+  hits at 0.35+ aren't all dropped as weak. Strict queries (floor=0.5)
+  unchanged. 111 tests pass.
+
+### Gap analysis
+
+- Added GAP_ANALYSIS.md documenting all 14 official MemPalace modules
+  the plugin doesn't use, with priority rankings and implementation plan.
+
+### Transcript normalization (Phase 19)
+
+- Wired `mempalace.normalize.strip_noise` into `sync_turn()` and
+  `on_delegation()` ingestion paths. Strips system tags, hook output,
+  and Claude Code UI chrome before content hits the palace. Line-anchored
+  patterns — user prose mentioning these strings inline is preserved.
+- New `normalize_content: bool = True` config flag (default ON).
+- New `MemPalaceAPI.strip_noise()` method — lazy-imports from
+  `mempalace.normalize`, fail-open (returns text unchanged on import failure).
+
+### Load/concurrency tests (Phase 16)
+
+- New `tests/test_load_concurrency.py` with 12 tests covering:
+  - Prefetch latency: single, sequential (10), concurrent (20 threads)
+  - Cache behavior: hit rate (50 repeated queries), eviction under pressure,
+    concurrent access (50 threads, 20 workers)
+  - Thread join: timeout budget, cleanup of completed threads
+  - Classification performance: 100 hits < 10ms, concurrent safety (8 threads)
+  - Pipeline integration: full L0→L3 within timeout, diagnostics counter accuracy
+
+### Internal
+
+- Plugin version bumped to 1.6.0
+- Total native tools: 38 (30 MCP-parity + 2 dynamics + 6 new)
+- py_compile: clean on all 6 modules
+- Test suite: 123 passed, 5 skipped (was 111)
+
 ## 1.5.3 (2026-06-02)
 
 ### MemPalace dynamics integration (Hebb + Ebbinghaus + Cepeda)
