@@ -1,7 +1,7 @@
 # MemPalace Memory Plugin — config-activated retrieval provider + native MemPalace tool bridge
 name: mempalace_memory
-version: "1.6.0"
-description: "Production-hardened Hermes MemoryProvider for MemPalace: modular refactor (config/api/retrieval/provider), native bridge for the full MemPalace tool surface, bounded recall, diagnostics, safe cache/thread lifecycle, optional ingestion, optional memory mirroring, optional Holographic overlay, KG-assisted recall, and session-end transcript archival."
+version: "1.7.0"
+description: "Production-hardened Hermes MemoryProvider for MemPalace v3.5.0: modular refactor (config/api/retrieval/provider), native bridge for the full MemPalace tool surface including v3.5.0 hallways management, text-based entity detection, bounded recall, diagnostics, safe cache/thread lifecycle, optional ingestion, optional memory mirroring, optional Holographic overlay, KG-assisted recall, and session-end transcript archival."
 author: Jupiter
 kind: exclusive
 requires_env: []
@@ -22,6 +22,8 @@ provides_tools:
   - mempalace_create_tunnel
   - mempalace_list_tunnels
   - mempalace_delete_tunnel
+  - mempalace_list_hallways
+  - mempalace_delete_hallway
   - mempalace_follow_tunnels
   - mempalace_search
   - mempalace_check_duplicate

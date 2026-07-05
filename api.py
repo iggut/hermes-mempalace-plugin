@@ -509,7 +509,7 @@ class MemPalaceAPI:
         },
         {
             "name": "mempalace_detect_entities",
-            "description": "Detect entities (people, projects, organizations) in text using MemPalace entity detection.",
+            "description": "Detect entities (people, projects, organizations) in text using MemPalace entity detection.\nUses extract_candidates + classify_entity for text-based detection (v3.5.0 compatible).",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -524,6 +524,33 @@ class MemPalaceAPI:
                     },
                 },
                 "required": ["text"],
+            },
+        },
+        {
+            "name": "mempalace_list_hallways",
+            "description": "List within-wing hallway records (entity-to-entity co-occurrence connections with Hebbian strength). Optionally filter by wing.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "wing": {
+                        "type": "string",
+                        "description": "Wing to filter hallways by (optional)",
+                    },
+                },
+            },
+        },
+        {
+            "name": "mempalace_delete_hallway",
+            "description": "Delete a hallway record by its ID. Returns {deleted: bool}.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "hallway_id": {
+                        "type": "string",
+                        "description": "Hallway record ID to delete",
+                    },
+                },
+                "required": ["hallway_id"],
             },
         },
     ]
@@ -581,6 +608,13 @@ class MemPalaceAPI:
         self._dedup_stats_fn: Any = None
         self._dedup_run_fn: Any = None
         self._detect_entities_fn: Any = None
+        # v3.5.0: text-based entity detection components
+        self._extract_candidates_fn: Any = None
+        self._classify_entity_fn: Any = None
+        self._confirm_entities_fn: Any = None
+        # v3.5.0: hallways management
+        self._list_hallways_fn: Any = None
+        self._delete_hallway_fn: Any = None
 
         self._col: Any = None
         self._kg: Any = None
@@ -598,6 +632,39 @@ class MemPalaceAPI:
             lp = str(Path(lib).expanduser())
             if lp not in sys.path:
                 sys.path.insert(0, lp)
+
+        # Package shadowing fix: when the plugin directory is on sys.path
+        # (standalone test mode), Python resolves `import mempalace` to the
+        # plugin package, not the library. We need to:
+        # 1. Move the library path to the front of sys.path
+        # 2. Evict any cached `mempalace` modules that point at the plugin
+        # 3. Import library functions (they bind to the library code)
+        # 4. Restore the original sys.path and plugin modules afterward
+        _evicted: dict = {}
+        _plugin_path = None
+        if lib:
+            lib_lp = str(Path(lib).expanduser())
+            # Find and temporarily remove the plugins dir from sys.path
+            for _i, _p in enumerate(sys.path):
+                if _p.endswith(".hermes/plugins") or _p.endswith(".hermes/plugins/"):
+                    _plugin_path = sys.path.pop(_i)
+                    break
+            # Ensure library path is at position 0
+            if lib_lp in sys.path:
+                sys.path.remove(lib_lp)
+            sys.path.insert(0, lib_lp)
+            # Evict cached mempalace modules that aren't from the library
+            lib_realpath = str(Path(lib).resolve() / "mempalace")
+            for _mod_name in list(sys.modules):
+                if _mod_name == "mempalace" or _mod_name.startswith("mempalace."):
+                    _mod = sys.modules.get(_mod_name)
+                    _mod_file = getattr(_mod, "__file__", "") or ""
+                    try:
+                        _resolved = str(Path(_mod_file).resolve())
+                    except Exception:
+                        _resolved = _mod_file
+                    if lib_realpath not in _resolved:
+                        _evicted[_mod_name] = sys.modules.pop(_mod_name)
 
         try:
             from mempalace.searcher import search_memories as _sm
@@ -743,11 +810,42 @@ class MemPalaceAPI:
         except Exception as e:
             logger.debug("[MemPalaceAPI] dedup.dedup_palace import failed: %s", e)
 
+        # entity_detector.detect_entities changed in v3.5.0: it now takes
+        # file_paths (list[Path]) instead of text (str). The plugin's
+        # tool_detect_entities works on text, so we import the lower-level
+        # text-based functions (extract_candidates + classify_entity +
+        # confirm_entities) and build a text wrapper in _detect_entities_fn.
         try:
-            from mempalace.entity_detector import detect_entities as _detect_entities
-            self._detect_entities_fn = _detect_entities
+            from mempalace.entity_detector import (
+                extract_candidates as _extract_candidates,
+                classify_entity as _classify_entity,
+                confirm_entities as _confirm_entities,
+            )
+            self._extract_candidates_fn = _extract_candidates
+            self._classify_entity_fn = _classify_entity
+            self._confirm_entities_fn = _confirm_entities
+            # Keep the raw detect_entities for file-path mode
+            try:
+                from mempalace.entity_detector import detect_entities as _detect_entities
+                self._detect_entities_fn = _detect_entities
+            except Exception:
+                self._detect_entities_fn = None
         except Exception as e:
-            logger.debug("[MemPalaceAPI] entity_detector.detect_entities import failed: %s", e)
+            logger.debug("[MemPalaceAPI] entity_detector import failed: %s", e)
+            self._extract_candidates_fn = None
+            self._classify_entity_fn = None
+            self._confirm_entities_fn = None
+
+        # New 3.5.0: hallways management
+        try:
+            from mempalace.hallways import list_hallways as _list_hallways
+            from mempalace.hallways import delete_hallway as _delete_hallway
+            self._list_hallways_fn = _list_hallways
+            self._delete_hallway_fn = _delete_hallway
+        except Exception as e:
+            logger.debug("[MemPalaceAPI] hallways management import failed: %s", e)
+            self._list_hallways_fn = None
+            self._delete_hallway_fn = None
 
         self._imported = bool(self._get_collection_fn)
         if not self._imported:
@@ -755,6 +853,15 @@ class MemPalaceAPI:
             logger.warning("[MemPalaceAPI] mempalace import failed — no modules available")
         else:
             self._import_error = None
+
+        # Restore: put the plugins path back and re-instate evicted modules
+        # so the plugin's own code continues to work after library import.
+        # Library functions are already bound to self._*_fn attributes.
+        if _plugin_path is not None and _plugin_path not in sys.path:
+            sys.path.insert(0, _plugin_path)
+        for _mod_name, _mod in _evicted.items():
+            if _mod_name not in sys.modules:
+                sys.modules[_mod_name] = _mod
 
     @property
     def is_available(self) -> bool:
@@ -1616,6 +1723,8 @@ class MemPalaceAPI:
             "mempalace_dedup_stats": lambda a: self.tool_dedup_stats(a.get("wing")),
             "mempalace_dedup_run": lambda a: self.tool_dedup_run(a.get("wing"), a.get("threshold", 0.95), bool(a.get("dry_run", True))),
             "mempalace_detect_entities": lambda a: self.tool_detect_entities(a["text"], a.get("languages")),
+            "mempalace_list_hallways": lambda a: self.tool_list_hallways(a.get("wing")),
+            "mempalace_delete_hallway": lambda a: self.tool_delete_hallway(a["hallway_id"]),
         }
         handler = dispatch.get(tool_name)
         if handler is None:
@@ -2221,16 +2330,98 @@ class MemPalaceAPI:
             return {"error": f"dedup run failed: {e}"}
 
     def tool_detect_entities(self, text: str, languages: Optional[List[str]] = None) -> Dict[str, Any]:
+        """Detect entities (people, projects, topics) from text.
+
+        In MemPalace v3.5.0, library detect_entities() changed to take
+        file_paths instead of text. This method preserves the text-based
+        interface by calling extract_candidates + classify_entity directly,
+        which is what detect_entities does internally after reading files.
+        """
         self._ensure_imported()
-        if self._detect_entities_fn is None:
-            return {"error": "entity_detector.detect_entities not available — mempalace.entity_detector module could not be imported"}
+        langs = tuple(languages) if languages else ("en",)
+
+        # Fast path: text-based pipeline (always available in v3.5.0)
+        if self._extract_candidates_fn is not None:
+            try:
+                candidates = self._extract_candidates_fn(text, languages=langs)
+                if not candidates:
+                    return {"people": [], "projects": [], "topics": [], "uncertain": []}
+
+                # Classify each candidate
+                people, projects, topics, uncertain = [], [], [], []
+                for name, freq in candidates.items():
+                    if self._classify_entity_fn:
+                        try:
+                            scores: dict = {"person_score": 0, "project_score": 0}
+                            entity = self._classify_entity_fn(name, freq, scores)
+                            etype = entity.get("type", "uncertain")
+                            entity["frequency"] = freq
+                            if etype == "person":
+                                people.append(entity)
+                            elif etype == "project":
+                                projects.append(entity)
+                            else:
+                                uncertain.append(entity)
+                        except Exception:
+                            uncertain.append({"name": name, "type": "uncertain", "frequency": freq})
+                    else:
+                        uncertain.append({"name": name, "type": "uncertain", "frequency": freq})
+
+                return {
+                    "people": people,
+                    "projects": projects,
+                    "topics": topics,
+                    "uncertain": uncertain,
+                }
+            except Exception as e:
+                return {"error": f"text entity detection failed: {e}"}
+
+        # Legacy fallback: old detect_entities(text, languages=...) API
+        if self._detect_entities_fn is not None:
+            try:
+                import inspect as _inspect
+                sig = _inspect.signature(self._detect_entities_fn)
+                first_param = next(iter(sig.parameters.values()), None)
+                if first_param and "file" in str(first_param).lower():
+                    return {"error": "detect_entities now requires file paths in v3.5.0; text mode unavailable"}
+                result = self._detect_entities_fn(text, languages=langs)
+                if isinstance(result, dict):
+                    return result
+                return {"result": result}
+            except Exception as e:
+                return {"error": f"detect entities failed: {e}"}
+
+        return {"error": "entity_detector not available — mempalace.entity_detector module could not be imported"}
+
+    # ----------------------------------------------------------------
+    # v3.5.0: Hallways management
+    # ----------------------------------------------------------------
+
+    def tool_list_hallways(self, wing: Optional[str] = None) -> Dict[str, Any]:
+        """List within-wing hallway records (entity-to-entity co-occurrence connections)."""
+        self._ensure_imported()
+        if self._list_hallways_fn is None:
+            return {"error": "hallways.list_hallways not available"}
         try:
-            result = self._detect_entities_fn(text, languages=languages or ("en",))
-            if isinstance(result, dict):
-                return result
+            result = self._list_hallways_fn(wing=wing) if wing else self._list_hallways_fn()
+            if isinstance(result, list):
+                return {"hallways": result, "count": len(result)}
             return {"result": result}
         except Exception as e:
-            return {"error": f"detect entities failed: {e}"}
+            return {"error": f"list hallways failed: {e}"}
+
+    def tool_delete_hallway(self, hallway_id: str) -> Dict[str, Any]:
+        """Delete a hallway record by its ID."""
+        self._ensure_imported()
+        if self._delete_hallway_fn is None:
+            return {"error": "hallways.delete_hallway not available"}
+        if not hallway_id or not isinstance(hallway_id, str):
+            return {"error": "hallway_id is required"}
+        try:
+            result = self._delete_hallway_fn(hallway_id)
+            return {"deleted": bool(result)}
+        except Exception as e:
+            return {"error": f"delete hallway failed: {e}"}
 
     def get_config_schema(self) -> List[Dict[str, Any]]:
         return [
